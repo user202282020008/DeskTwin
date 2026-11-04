@@ -39,6 +39,7 @@ public partial class MainWindow : Window
     private bool _closeInProgress;
     private bool _closeApproved;
     private TrayIcon? _tray;
+    private KeyboardHook? _keyboardHook;
     private bool _hiddenToTray;
     private CredentialInput? _sessionCredential;
     private bool _credentialDialogOpen;
@@ -1437,6 +1438,15 @@ public partial class MainWindow : Window
         _windowHandle = new WindowInteropHelper(this).Handle;
         _windowSource = HwndSource.FromHwnd(_windowHandle);
         _windowSource?.AddHook(OnWindowMessage);
+
+        // PrintScreen 抢不过 RDP 自带的低级钩子，这里用同级钩子在本机截获并吞掉。
+        _keyboardHook = new KeyboardHook
+        {
+            ShouldIntercept = () => ChildSessionNative.IsOurWindowInForeground(_windowHandle)
+        };
+        _keyboardHook.PrintScreenPressed += () =>
+            Dispatcher.BeginInvoke(new Action(CaptureScreenshot));
+        _keyboardHook.Install();
         RefreshResolutionOptions();
         UpdateGlobalHotKeys();
     }
@@ -2044,6 +2054,8 @@ public partial class MainWindow : Window
         _rdp.ClearCredentials();
         RdpFormsHost.Child = null;
         _rdp.Dispose();
+        _keyboardHook?.Dispose();
+        _keyboardHook = null;
         _tray?.Dispose();
         _tray = null;
         SaveSettings();
@@ -2098,7 +2110,7 @@ public partial class MainWindow : Window
             + "4. 顶部连接条同时是标题栏：可拖动、双击进入全屏；在它上面点右键（或点“选项”）可打开全部设置。\n"
             + "5. 分辨率有两种模式：“自适应”随窗口/全屏改变分身分辨率（点对点、不缩放）；“缩放”保持固定分辨率，窗口比例会自动锁成该分辨率，画面正好铺满、不变形（全屏时若显示器比例不同，仍会有黑边）。\n"
             + "6. 点全屏按钮、系统最大化按钮、双击标题栏或 Win+↑ 都会进入真全屏（覆盖任务栏）；进入全屏先显示 3 秒，之后只有把鼠标移到屏幕右上角才出现，移开约 1 秒自动隐藏。F11 仍照常发给分身内的程序。\n"
-            + "7. PrintScreen 在 DeskTwin 窗口内会截取当前分身画面，保存到“图片\\DeskTwin”并复制到剪贴板。\n"
+            + "7. PrintScreen 由本应用接管：截取当前分身画面，保存到“图片\\DeskTwin”并复制到剪贴板，同时不会转发进分身（分身里的截图工具是 UWP 应用，在 Child Session 中无法启动，会报“没有与之关联的应用”）。\n"
             + "8. 启动时的环境风险提示可勾选“不再显示此提示”；之后可在右键菜单“启动时提示环境风险”里恢复。\n"
             + "9. “断开”只关闭画面，程序继续运行；“结束分身”会注销会话并关闭其中程序。\n"
             + "10. 关闭窗口时若分身还在，会问你怎么处理：选“是”挂到系统托盘（不断开会话，进程继续跑，双击托盘图标或用托盘菜单可恢复），选“否”结束分身并退出。\n"
@@ -2114,7 +2126,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.4.3\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.4.4\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",

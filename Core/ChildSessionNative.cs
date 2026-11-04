@@ -52,6 +52,26 @@ internal static class ChildSessionNative
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool EnableWindow(IntPtr window, [MarshalAs(UnmanagedType.Bool)] bool enabled);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetAncestor(IntPtr window, uint flags);
+
+    private const uint GaRoot = 2;
+
+    /// <summary>给定窗口是否属于（或就是）我们自己的顶层窗口。</summary>
+    public static bool IsOurWindowInForeground(IntPtr ourWindow)
+    {
+        if (ourWindow == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var foreground = GetForegroundWindow();
+        return foreground != IntPtr.Zero && GetAncestor(foreground, GaRoot) == ourWindow;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint virtualKey);

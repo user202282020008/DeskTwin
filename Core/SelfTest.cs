@@ -408,6 +408,36 @@ public static class SelfTest
                 window.ExitForTest();
             }
         }));
+        checks.Add(RunCheck("PrintScreen 钩子", () =>
+        {
+            // RDP 控件自己装了低级键盘钩子，会把 PrintScreen 转发进子会话；
+            // 子会话里的截图工具（UWP）启动不了，用户只会看到“没有关联的应用”。
+            // 这里验证我们的同级钩子能装起来、能收到并吞掉这个键。
+            var pressed = 0;
+            using var hook = new KeyboardHook { ShouldIntercept = () => true };
+            hook.PrintScreenPressed += () => pressed++;
+            if (!hook.Install())
+            {
+                return "无法安装键盘钩子（可能被安全软件拦截）。";
+            }
+
+            PumpDispatcher(
+                System.Windows.Threading.Dispatcher.CurrentDispatcher,
+                System.Windows.Threading.DispatcherPriority.Loaded);
+            System.Threading.Thread.Sleep(200);
+
+            KeybdEvent(VkSnapshot, 0, 0);
+            KeybdEvent(VkSnapshot, 0, KeyEventKeyUp);
+            for (var i = 0; i < 4 && pressed == 0; i++)
+            {
+                PumpDispatcher(
+                    System.Windows.Threading.Dispatcher.CurrentDispatcher,
+                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                System.Threading.Thread.Sleep(80);
+            }
+
+            return pressed > 0 ? null : "钩子装上但没收到 PrintScreen。";
+        }));
         checks.Add(RunCheck("提示窗口布局", () =>
         {
             var window = new NoticeWindow("自检提示", "用于验证“不再显示此提示”对话框能否正常创建。");
@@ -464,7 +494,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.3",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.4",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
@@ -712,6 +742,15 @@ public static class SelfTest
         Console.WriteLine("probe-instance: " + output.Trim());
         return process.HasExited ? process.ExitCode : -2;
     }
+
+    private const byte VkSnapshot = 0x2C;
+    private const uint KeyEventKeyUp = 2;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern void keybd_event(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
+
+    private static void KeybdEvent(byte virtualKey, byte scanCode, uint flags) =>
+        keybd_event(virtualKey, scanCode, flags, UIntPtr.Zero);
 
     private static void PumpDispatcher(
         System.Windows.Threading.Dispatcher dispatcher,
