@@ -57,6 +57,7 @@ public static class SelfTest
             return null;
         }));
         checks.Add(RunCheck("RDP 凭据接口", RdpClientHost.ValidateCredentialInterface));
+        checks.Add(RunCheck("缩放与凭据可重置", () => RdpClientHost.ValidateResetBehavior()));
         checks.Add(RunCheck("DPAPI 凭据加密", () =>
         {
             const string plaintext = "DeskTwin-SelfTest-Credential";
@@ -376,6 +377,26 @@ public static class SelfTest
                 dialog.Close();
             }
         }));
+        checks.Add(RunCheck("探针超时保护", () =>
+        {
+            // 回归用例：以前先 ReadToEnd 再 WaitForExit，子进程挂住时会卡在读取上，
+            // 超时参数形同虚设。--probe-hang 故意睡 5 秒，400ms 超时必须能终止它。
+            var started = Environment.TickCount64;
+            RunProbe("--probe-hang", 400, out var timedOut);
+            var elapsed = Environment.TickCount64 - started;
+
+            if (!timedOut)
+            {
+                return $"超时保护没有生效（耗时 {elapsed}ms，未判定为超时）。";
+            }
+
+            if (elapsed > 4000)
+            {
+                return $"超时保护生效得太晚（耗时 {elapsed}ms，期望 400ms 左右）。";
+            }
+
+            return null;
+        }));
         checks.Add(RunCheck("托盘图标与挂托盘", () =>
         {
             // 1) 托盘图标能用嵌入资源创建（单文件/自定义图标都走这条）。
@@ -580,7 +601,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.8",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.9",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
@@ -754,7 +775,18 @@ public static class SelfTest
         return null;
     }
 
-    /// <summary>起一个带指定参数的自检探针子进程，返回退出码；超时则 timedOut = true。</summary>
+    /// <summary>启动一个 --probe-instance 子进程，返回它的退出码（4 = 已被占用）。</summary>
+    private static int ProbeSecondInstance()
+    {
+        var exitCode = RunProbe("--probe-instance", 20000, out var timedOut);
+        return timedOut ? -1 : exitCode;
+    }
+
+    /// <summary>
+    /// 起一个带指定参数的自检探针子进程，返回退出码；超时则 timedOut = true。
+    /// 标准输出/错误必须**并发**读取：如果先 ReadToEnd 再 WaitForExit，
+    /// 子进程一旦挂住、管道不关闭，就会卡在读取上，超时保护形同虚设。
+    /// </summary>
     private static int RunProbe(string argument, int timeoutMs, out bool timedOut)
     {
         timedOut = false;
@@ -784,7 +816,9 @@ public static class SelfTest
             return -1;
         }
 
-        process.StandardOutput.ReadToEnd();
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+
         if (!process.WaitForExit(timeoutMs))
         {
             timedOut = true;
@@ -797,47 +831,40 @@ public static class SelfTest
                 // 已经退出就忽略。
             }
 
+            // 进程被终止后管道会断开，这里只是收尾，不关心结果。
+            WaitQuietly(outputTask, errorTask, 2000);
             return -1;
+        }
+
+        var output = WaitQuietly(outputTask, errorTask, 3000);
+        if (!string.IsNullOrWhiteSpace(output))
+        {
+            Console.WriteLine(argument.TrimStart('-') + ": " + output.Trim());
         }
 
         return process.ExitCode;
     }
 
-    /// <summary>启动一个 --probe-instance 子进程，返回它的退出码（4 = 已被占用）。</summary>
-    private static int ProbeSecondInstance()
+    /// <summary>等待输出读取完成并返回标准输出；任何异常都当作没有输出。</summary>
+    private static string WaitQuietly(Task<string> output, Task<string> error, int timeoutMs)
     {
-        var host = Environment.ProcessPath;
-        if (string.IsNullOrEmpty(host))
+        try
         {
-            return -1;
+            Task.WaitAll([(Task)output, error], timeoutMs);
+        }
+        catch (Exception)
+        {
+            // 进程被强杀时读取任务会以异常结束，忽略。
         }
 
-        // 不能用 Assembly.Location：单文件发布下它恒为空（IL3000）。
-        // 命令行第 0 项在 dotnet 宿主下就是 dll 路径，在单文件下就是 exe 路径。
-        var entryArgument = Environment.GetCommandLineArgs().FirstOrDefault();
-        var arguments = host.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase)
-                        && entryArgument?.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) == true
-            ? $"\"{entryArgument}\" --probe-instance"
-            : "--probe-instance";
-
-        var startInfo = new System.Diagnostics.ProcessStartInfo(host, arguments)
+        try
         {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true
-        };
-
-        using var process = System.Diagnostics.Process.Start(startInfo);
-        if (process is null)
-        {
-            return -1;
+            return output.IsCompletedSuccessfully ? output.Result : string.Empty;
         }
-
-        var output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit(20000);
-        Console.WriteLine("probe-instance: " + output.Trim());
-        return process.HasExited ? process.ExitCode : -2;
+        catch (Exception)
+        {
+            return string.Empty;
+        }
     }
 
     private const byte VkSnapshot = 0x2C;

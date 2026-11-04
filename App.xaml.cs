@@ -26,6 +26,15 @@ public partial class App : System.Windows.Application
         }
 
 
+
+        // 自检用：一个故意挂住、不创建窗口的子进程，用来验证探针的超时保护。
+        if (e.Args.Any(arg => string.Equals(arg, "--probe-hang", StringComparison.OrdinalIgnoreCase)))
+        {
+            Thread.Sleep(5000);
+            Environment.Exit(0);
+            return;
+        }
+
         // 自检用的诊断入口：走真实启动路径（StartupUri 创建的窗口），2 秒后关闭，
         // 用来验证“关窗后进程能不能自己退出”。能退出则进程以 0 结束，挂住则被外部超时杀掉。
         if (e.Args.Any(arg => string.Equals(arg, "--probe-close-exit", StringComparison.OrdinalIgnoreCase)))

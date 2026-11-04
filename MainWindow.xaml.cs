@@ -2135,7 +2135,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.4.8\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.4.9\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",

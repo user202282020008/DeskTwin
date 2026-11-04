@@ -17,7 +17,6 @@ internal sealed class RdpClientHost : AxHost
     private const short VariantFalse = 0;
     private const short VariantTrue = -1;
     private const int RedirectAudioToClient = 0;
-    private const int DisableRemoteAudio = 2;
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(1);
     private const long DisconnectCallbackTimeoutMs = 5000;
 
@@ -100,14 +99,78 @@ internal sealed class RdpClientHost : AxHost
         }
     }
 
+    /// <summary>
+    /// 自检用：验证同一个 ActiveX 实例上，缩放与凭据都能被真正重置。
+    /// 这是“复用控件”场景下 140%→100%、清除凭据能生效的前提。
+    /// </summary>
+    internal static string? ValidateResetBehavior()
+    {
+        var type = Type.GetTypeFromCLSID(new Guid(RdpClientClsid));
+        if (type is null)
+        {
+            return "MsRdpClient10 未注册。";
+        }
+
+        object? client = null;
+        try
+        {
+            client = Activator.CreateInstance(type);
+            if (client is null)
+            {
+                return "无法创建 RDP 控件实例。";
+            }
+
+            var extended = (IMsRdpExtendedSettings)client;
+            object high = (uint)140;
+            extended.set_Property("DesktopScaleFactor", ref high);
+            object normal = (uint)100;
+            extended.set_Property("DesktopScaleFactor", ref normal);
+            var read = extended.get_Property("DesktopScaleFactor");
+            if (Convert.ToInt32(read, CultureInfo.InvariantCulture) != 100)
+            {
+                return "DesktopScaleFactor 无法回写 100%，复用控件时会残留旧缩放。";
+            }
+
+            SetComProperty(client, "UserName", "synthetic-account");
+            SetComProperty(client, "Domain", "SYNTHETIC");
+            SetComProperty(client, "UserName", string.Empty);
+            SetComProperty(client, "Domain", string.Empty);
+            var user = GetComProperty(client, "UserName")?.ToString();
+            var domain = GetComProperty(client, "Domain")?.ToString();
+            if (!string.IsNullOrEmpty(user) || !string.IsNullOrEmpty(domain))
+            {
+                return $"凭据无法清空（UserName='{user}'，Domain='{domain}'）。";
+            }
+
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return "重置验证失败：" + exception.GetBaseException().Message;
+        }
+        finally
+        {
+            if (client is not null && Marshal.IsComObject(client))
+            {
+                Marshal.FinalReleaseComObject(client);
+            }
+        }
+    }
+
     private void ApplyCredentials(object client)
     {
+        var nonScriptable = (IMsRdpClientNonScriptable)client;
+
+        // 用户清除了保存的凭据：必须把控件里上一次的账户/域/密码一起清掉，
+        // 否则整个窗口生命周期复用同一个控件，下次连接会继续用旧凭据。
         if (_userName is null && _password is null)
         {
+            nonScriptable.ResetPassword();
+            TrySetComProperty(client, "Domain", string.Empty);
+            TrySetComProperty(client, "UserName", string.Empty);
             return;
         }
 
-        var nonScriptable = (IMsRdpClientNonScriptable)client;
         if (_password is not null)
         {
             nonScriptable.put_ClearTextPassword(_password);
@@ -179,11 +242,11 @@ internal sealed class RdpClientHost : AxHost
                 securedSettings,
                 "KeyboardHookMode",
                 _sendSystemShortcutsToRemote ? 1 : 0));
+        // 始终把远程音频重定向到客户端。不能在静音时设成“禁用重定向”：
+        // 那样连接期间就不存在音频流，事后取消静音也无法恢复，只能以非静音状态重连。
+        // 静音统一由本进程的 WASAPI 音频会话控制，才能即时切换。
         RunComStep("设置远程音频重定向", () =>
-            SetComProperty(
-                securedSettings,
-                "AudioRedirectionMode",
-                _audioMuted ? DisableRemoteAudio : RedirectAudioToClient));
+            SetComProperty(securedSettings, "AudioRedirectionMode", RedirectAudioToClient));
 
         var advancedSettings = GetComProperty(client, "AdvancedSettings7")
             ?? throw new COMException("RDP ActiveX 未返回 AdvancedSettings7。");
@@ -231,11 +294,8 @@ internal sealed class RdpClientHost : AxHost
     /// </summary>
     private void ApplyDisplayScale(IMsRdpExtendedSettings extendedSettings)
     {
-        if (_desktopScaleFactor == 100 && _deviceScaleFactor == 100)
-        {
-            return;
-        }
-
+        // 不能因为“目标是 100%”就跳过：控件在整个窗口生命周期内复用，
+        // 上一次连接写进去的 140%/180% 会残留，导致界面上写 100% 实际仍是旧值。
         object desktopScale = (uint)_desktopScaleFactor;
         TrySetExtendedProperty(extendedSettings, "DesktopScaleFactor", desktopScale);
         object deviceScale = (uint)_deviceScaleFactor;
