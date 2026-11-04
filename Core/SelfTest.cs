@@ -103,6 +103,38 @@ public static class SelfTest
         checks.Add(RunCheck("WPF 样式资源", ValidateStyleResources));
         checks.Add(RunCheck("真全屏与退出控件", ValidateFullscreenBounds));
         checks.Add(RunCheck("全屏自适应分辨率", ValidateAdaptiveResolution));
+        checks.Add(RunCheck("会话缩放参数一致", () =>
+        {
+            // DesktopScaleFactor 与 DeviceScaleFactor 必须相等。
+            // DeviceScaleFactor 只允许 100/140/180，若只把 Desktop 设成 150，
+            // 任务栏等系统元素会被非整数倍拉伸（图标模糊、大小不齐）。
+            if (AdaptiveResolution.ToSessionScaleFactor(1.5) != 140)
+            {
+                return $"150% 显示器的会话缩放应为 140%，实际 {AdaptiveResolution.ToSessionScaleFactor(1.5)}%。";
+            }
+
+            if (AdaptiveResolution.ToSessionScaleFactor(1.0) != 100)
+            {
+                return "100% 显示器应得到 100%。";
+            }
+
+            if (AdaptiveResolution.ToSessionScaleFactor(2.0) != 180)
+            {
+                return "200% 显示器应得到 180%。";
+            }
+
+            var illegal = 0;
+            foreach (var percent in new[] { 0, 96, 100, 125, 140, 150, 175, 180, 250 })
+            {
+                var normalized = AdaptiveResolution.NormalizeSessionScaleFactor(percent);
+                if (normalized != 0 && normalized is not (100 or 140 or 180))
+                {
+                    illegal++;
+                }
+            }
+
+            return illegal == 0 ? null : $"{illegal} 个缩放值落到了非法档位。";
+        }));
         checks.Add(RunCheck("主窗口布局与分辨率菜单", () =>
         {
             // 构造主窗口即可验证 XAML 能否解析（历史上曾因资源类型错误在这里暴露）。
@@ -419,7 +451,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.0",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.1",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),

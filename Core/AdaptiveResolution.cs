@@ -63,6 +63,25 @@ internal static class AdaptiveResolution
         : desktopScaleFactor >= 150 ? 140
         : 100;
 
+    /// <summary>
+    /// 会话缩放必须让 DesktopScaleFactor 与 DeviceScaleFactor**完全一致**。
+    /// DeviceScaleFactor 只允许 100/140/180，如果只把 DesktopScaleFactor 设成 150，
+    /// Windows 会按 140% 计算 DPI 感知（任务栏图标、字体度量）却按 150% 渲染，
+    /// 图标被非整数倍拉伸，看上去模糊、大小不齐、位置错位。
+    /// </summary>
+    internal static int ToSessionScaleFactor(double dpiScale) =>
+        ToDeviceScaleFactor(ToDesktopScaleFactor(dpiScale));
+
+    /// <summary>把用户指定的百分比收拢到 RDP 真正支持的档位，保证两个参数一致。</summary>
+    internal static int NormalizeSessionScaleFactor(int percent) =>
+        percent switch
+        {
+            <= 0 => 0,
+            < 120 => 100,
+            < 160 => 140,
+            _ => 180
+        };
+
     internal static bool IsUsable(DrawingSize size) =>
         size.Width is >= MinDimension and <= MaxDimension
         && size.Height is >= MinDimension and <= MaxDimension;

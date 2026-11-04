@@ -9,6 +9,9 @@ public sealed class DesktopSettings
     public int DesktopHeight { get; set; } = 1080;
     /// <summary>true：自适应模式（分辨率随窗口变化）；false：缩放模式（固定分辨率、等比缩放）。</summary>
     public bool FitToWindow { get; set; } = true;
+    /// <summary>缩放模式下会话缩放（100/140/180）；0 表示跟随系统 DPI。</summary>
+    public int SessionScaleFactor { get; set; }
+
     /// <summary>启动时不再弹出环境风险提示。</summary>
     public bool SkipStartupWarning { get; set; }
     public bool Topmost { get; set; }

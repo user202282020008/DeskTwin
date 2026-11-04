@@ -91,6 +91,10 @@ public partial class MainWindow : Window
         TaskViewMenuItem.Click += (_, _) => SendShortcut(_rdp.SendTaskViewShortcut, "Win+Tab");
         ShowDesktopMenuItem.Click += (_, _) => SendShortcut(_rdp.SendShowDesktopShortcut, "Win+D");
         ScreenshotMenuItem.Click += (_, _) => CaptureScreenshot();
+        ScaleAutoItem.Click += (_, _) => SetSessionScale(0);
+        Scale100Item.Click += (_, _) => SetSessionScale(100);
+        Scale140Item.Click += (_, _) => SetSessionScale(140);
+        Scale180Item.Click += (_, _) => SetSessionScale(180);
         AdaptiveModeMenuItem.Click += OnResolutionModeChanged;
         ScaledModeMenuItem.Click += OnResolutionModeChanged;
         WatchMenuItem.Click += OnWatchToggled;
@@ -157,6 +161,7 @@ public partial class MainWindow : Window
         TopmostMenuItem.IsChecked = _settings.Topmost;
         ShortcutsMenuItem.IsChecked = _settings.SendSystemShortcuts;
         StartupWarningMenuItem.IsChecked = !_settings.SkipStartupWarning;
+        UpdateScaleMenuChecks();
         Topmost = _settings.Topmost;
         // 缩放模式靠 SmartSizing 做等比例缩放；自适应模式下尺寸本来就一致，开启只用于吸收 1px 取整误差。
         _rdp.SetSmartSizing(true);
@@ -165,6 +170,53 @@ public partial class MainWindow : Window
         RefreshResolutionOptions();
         UpdateViewportLayout();
         ApplyAspectToWindow();
+    }
+
+    /// <summary>诊断用：描述当前会实际使用的会话缩放档位。</summary>
+    private string DescribeSessionScale()
+    {
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var isAuto = AdaptiveResolution.NormalizeSessionScaleFactor(_settings.SessionScaleFactor) == 0;
+        var applied = isAuto
+            ? AdaptiveResolution.ToSessionScaleFactor(dpi.DpiScaleX)
+            : AdaptiveResolution.NormalizeSessionScaleFactor(_settings.SessionScaleFactor);
+        var source = isAuto ? "跟随系统" : "手动指定";
+        return $"{applied}%（{source}，显示器 {dpi.DpiScaleX * 100:0}%）";
+    }
+
+    /// <summary>
+    /// 会话缩放：DesktopScaleFactor 与 DeviceScaleFactor 始终取同一个合法档位。
+    /// 只影响子会话里的 UI 大小，改完需要重连才生效。
+    /// </summary>
+    private void SetSessionScale(int percent)
+    {
+        _settings.SessionScaleFactor = Math.Max(0, percent);
+        UpdateScaleMenuChecks();
+        SaveSettings();
+
+        var applied = AdaptiveResolution.NormalizeSessionScaleFactor(_settings.SessionScaleFactor);
+        if (applied == 0)
+        {
+            var dpi = VisualTreeHelper.GetDpi(this);
+            applied = AdaptiveResolution.ToSessionScaleFactor(dpi.DpiScaleX);
+        }
+
+        if (_rdp.ConnectedState != 0)
+        {
+            ReconnectAtSize(ComputeTargetSize(), $"会话缩放 → {applied}%", force: true);
+            return;
+        }
+
+        SetStatus($"会话缩放已设为 {applied}%，下次连接生效。");
+    }
+
+    private void UpdateScaleMenuChecks()
+    {
+        var effective = AdaptiveResolution.NormalizeSessionScaleFactor(_settings.SessionScaleFactor);
+        ScaleAutoItem.IsChecked = effective == 0;
+        Scale100Item.IsChecked = effective == 100;
+        Scale140Item.IsChecked = effective == 140;
+        Scale180Item.IsChecked = effective == 180;
     }
 
     /// <summary>自检用：切换分辨率模式并立即应用（不会写配置）。</summary>
@@ -1283,8 +1335,16 @@ public partial class MainWindow : Window
     private void ApplyDisplayScale()
     {
         var dpi = VisualTreeHelper.GetDpi(this);
-        var desktopScale = AdaptiveResolution.ToDesktopScaleFactor(dpi.DpiScaleX);
-        _rdp.SetDisplayScale(desktopScale, AdaptiveResolution.ToDeviceScaleFactor(desktopScale));
+        // 两个参数必须一致，否则任务栏等系统元素会被非整数倍拉伸（模糊、大小不齐）。
+        var scale = _settings.SessionScaleFactor > 0
+            ? AdaptiveResolution.NormalizeSessionScaleFactor(_settings.SessionScaleFactor)
+            : AdaptiveResolution.ToSessionScaleFactor(dpi.DpiScaleX);
+        if (scale <= 0)
+        {
+            scale = 100;
+        }
+
+        _rdp.SetDisplayScale(scale, scale);
     }
 
     /// <summary>显示器分辨率或 DPI 变化时重新贴合全屏边界并同步分辨率。</summary>
@@ -1974,7 +2034,8 @@ public partial class MainWindow : Window
                          + $"当前分身会话：{session?.ToString() ?? "无"}\n"
                          + $"RDP 端口：{ChildSessionNative.GetRdpPort()}\n"
                          + $"分辨率模式：{(_settings.FitToWindow ? "自适应" : "缩放")}\n"
-                         + $"当前分身分辨率：{CurrentDesktopSize.Width} × {CurrentDesktopSize.Height}\n\n"
+                         + $"当前分身分辨率：{CurrentDesktopSize.Width} × {CurrentDesktopSize.Height}\n"
+                         + $"会话缩放：{DescribeSessionScale()}\n\n"
                          + (issues.Count == 0
                              ? "未发现已知兼容性问题。"
                              : EnvironmentCheck.BuildSummary(issues));
@@ -2011,7 +2072,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.4.0\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.4.1\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",

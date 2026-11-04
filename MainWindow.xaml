@@ -37,6 +37,12 @@
                         <MenuItem x:Name="ScaledModeMenuItem" Header="缩放（固定分辨率，等比例显示）" IsCheckable="True" />
                     </MenuItem>
                     <MenuItem x:Name="ResolutionMenu" Header="分辨率（缩放模式使用）" />
+                    <MenuItem x:Name="SessionScaleMenu" Header="会话缩放（重连后生效）">
+                        <MenuItem x:Name="ScaleAutoItem" Header="跟随系统（推荐）" IsCheckable="True" />
+                        <MenuItem x:Name="Scale100Item" Header="100%" IsCheckable="True" />
+                        <MenuItem x:Name="Scale140Item" Header="140%" IsCheckable="True" />
+                        <MenuItem x:Name="Scale180Item" Header="180%" IsCheckable="True" />
+                    </MenuItem>
                     <Separator />
                     <MenuItem x:Name="WatchMenuItem" Header="观看模式（本机键鼠不进入分身）" IsCheckable="True" />
                     <MenuItem x:Name="MuteMenuItem" Header="静音" IsCheckable="True" />
