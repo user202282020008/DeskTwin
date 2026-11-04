@@ -10,7 +10,7 @@
     <ApplicationIcon>app.ico</ApplicationIcon>
     <AssemblyName>DeskTwin</AssemblyName>
     <RootNamespace>DeskTwin</RootNamespace>
-    <Version>1.4.7</Version>
+    <Version>1.4.8</Version>
     <Authors>DeskTwin contributors</Authors>
     <Description>独立 Windows 桌面分身工具，基于 Windows Child Session 与本机 RDP。</Description>
     <Copyright>2026 DeskTwin contributors; derived from BetterGI (GPL-3.0)</Copyright>

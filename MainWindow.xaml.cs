@@ -40,7 +40,6 @@ public partial class MainWindow : Window
     private bool _closeApproved;
     private TrayIcon? _tray;
     private KeyboardHook? _keyboardHook;
-    private MouseHook? _mouseHook;
     private bool _hiddenToTray;
     private CredentialInput? _sessionCredential;
     private bool _credentialDialogOpen;
@@ -1220,7 +1219,6 @@ public partial class MainWindow : Window
             ShowFullscreenExitWindow();
             UpdateViewportLayout();
             SyncDesktopSize("进入全屏");
-            InstallFullscreenMouseHook();
         }
         catch (Exception exception)
         {
@@ -1269,8 +1267,6 @@ public partial class MainWindow : Window
         HeaderBar.Visibility = Visibility.Visible;
         ViewportContainer.Margin = new Thickness(0);
         SetStatus("已退出全屏。");
-        _mouseHook?.Dispose();
-        _mouseHook = null;
         UpdateViewportLayout();
         ApplyAspectToWindow();
 
@@ -1979,65 +1975,6 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// 全屏时用低级鼠标钩子接管右键：画面区是 RDP 控件，WPF 收不到它的鼠标消息，
-    /// 顶部那条挂右键菜单的连接条此时也被隐藏了，否则用户在全屏里没有任何入口打开设置。
-    /// </summary>
-    private void InstallFullscreenMouseHook()
-    {
-        if (_mouseHook is not null)
-        {
-            return;
-        }
-
-        _mouseHook = new MouseHook
-        {
-            ShouldIntercept = IsFullscreenRightClickTarget
-        };
-        _mouseHook.RightButtonPressed += (x, y) =>
-            Dispatcher.BeginInvoke(new Action(() => ShowContextMenuAt(x, y)));
-        _mouseHook.Install();
-    }
-
-    /// <summary>自检用：判断某个屏幕坐标的右键是否会被接管。</summary>
-    internal bool IsFullscreenRightClickTargetForTest(int screenX, int screenY) =>
-        IsFullscreenRightClickTarget(screenX, screenY);
-
-    private bool IsFullscreenRightClickTarget(int screenX, int screenY)
-    {
-        if (!_fullscreen.IsFullscreen || _closeInProgress)
-        {
-            return false;
-        }
-
-        if (!ChildSessionNative.IsOurWindowInForeground(_windowHandle))
-        {
-            return false;
-        }
-
-        var bounds = FullscreenController.GetWindowBounds(_windowHandle);
-        return screenX >= bounds.Left && screenX < bounds.Right
-               && screenY >= bounds.Top && screenY < bounds.Bottom;
-    }
-
-    /// <summary>在指定屏幕坐标弹出设置菜单（全屏时用，坐标是物理像素）。</summary>
-    internal void ShowContextMenuAt(int screenX, int screenY)
-    {
-        if (_closeInProgress)
-        {
-            return;
-        }
-
-        var dpi = VisualTreeHelper.GetDpi(this);
-        // 菜单要点外面才会关，先把窗口拿回前台。
-        Activate();
-        HeaderMenu.PlacementTarget = ViewportContainer;
-        HeaderMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.AbsolutePoint;
-        HeaderMenu.HorizontalOffset = screenX / dpi.DpiScaleX;
-        HeaderMenu.VerticalOffset = screenY / dpi.DpiScaleY;
-        HeaderMenu.IsOpen = true;
-    }
-
     private CloseChoice ShowCloseChoice()
     {
         var dialog = new CloseChoiceWindow { Owner = this };
@@ -2128,8 +2065,6 @@ public partial class MainWindow : Window
         _rdp.Dispose();
         _keyboardHook?.Dispose();
         _keyboardHook = null;
-        _mouseHook?.Dispose();
-        _mouseHook = null;
         _tray?.Dispose();
         _tray = null;
         SaveSettings();
@@ -2183,7 +2118,7 @@ public partial class MainWindow : Window
             + "3. 先在“登录凭据”中保存账户和密码，之后切换分辨率、修改显示设置都不再要求重新输入密码；密码由 Windows DPAPI 按当前用户加密。\n"
             + "4. 顶部连接条同时是标题栏：可拖动、双击进入全屏；在它上面点右键（或点“选项”）可打开全部设置。\n"
             + "5. 分辨率有两种模式：“自适应”随窗口/全屏改变分身分辨率（点对点、不缩放）；“缩放”保持固定分辨率，窗口比例会自动锁成该分辨率，画面正好铺满、不变形（全屏时若显示器比例不同，仍会有黑边）。\n"
-            + "6. 点全屏按钮、系统最大化按钮、双击标题栏或 Win+↑ 都会进入真全屏（覆盖任务栏）；全屏时在画面任意位置点右键可打开设置菜单。右上角“退出全屏”按钮先显示 3 秒，之后只有把鼠标移到屏幕右上角才出现，移开约 1 秒自动隐藏。F11 仍照常发给分身内的程序。\n"
+            + "6. 点全屏按钮、系统最大化按钮、双击标题栏或 Win+↑ 都会进入真全屏（覆盖任务栏）；右上角“退出全屏”按钮先显示 3 秒，之后只有把鼠标移到屏幕右上角才出现，移开约 1 秒自动隐藏。F11 仍照常发给分身内的程序。\n"
             + "7. PrintScreen 由本应用接管：截取当前分身画面，保存到“图片\\DeskTwin”并复制到剪贴板，同时不会转发进分身（分身里的截图工具是 UWP 应用，在 Child Session 中无法启动，会报“没有与之关联的应用”）。\n"
             + "8. 启动时的环境风险提示可勾选“不再显示此提示”；之后可在右键菜单“启动时提示环境风险”里恢复。\n"
             + "9. “断开”只关闭画面，程序继续运行；“结束分身”会注销会话并关闭其中程序。\n"
@@ -2200,7 +2135,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.4.7\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.4.8\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",
