@@ -156,6 +156,32 @@ public static class SelfTest
             window.Close();
             return null;
         }));
+        checks.Add(RunCheck("静音走本地音频会话", () =>
+        {
+            // 用一段静音 WAV 让本进程产生音频会话（不会真的出声），再验证能否设置静音。
+            try
+            {
+                using var silence = CreateSilentWav();
+                using var player = new System.Media.SoundPlayer(silence);
+                player.Play();
+                System.Threading.Thread.Sleep(600);
+            }
+            catch (Exception exception)
+            {
+                return "无法创建测试音频会话：" + exception.GetBaseException().Message;
+            }
+
+            if (!AudioSessionMute.TrySetMute(true, out var muteError))
+            {
+                return muteError is not null && muteError.Contains("播放设备", StringComparison.Ordinal)
+                    ? null
+                    : "无法静音本进程音频会话：" + (muteError ?? "未知原因");
+            }
+
+            return AudioSessionMute.TrySetMute(false, out var unmuteError)
+                ? null
+                : "无法取消静音：" + (unmuteError ?? "未知原因");
+        }));
         checks.Add(RunCheck("配置读写", () =>
         {
             var directory = Path.GetDirectoryName(outputPath)!;
@@ -174,7 +200,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.4",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.5",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
@@ -333,6 +359,34 @@ public static class SelfTest
 
         var settings = new DesktopSettings();
         return settings.FitToWindow ? null : "默认分辨率模式应为自适应。";
+    }
+
+    /// <summary>生成 0.25 秒静音 PCM WAV，仅用于制造音频会话。</summary>
+    private static Stream CreateSilentWav()
+    {
+        const int sampleRate = 8000;
+        const short bits = 16;
+        var dataLength = sampleRate * bits / 8 / 4;
+        var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+            writer.Write(36 + dataLength);
+            writer.Write(System.Text.Encoding.ASCII.GetBytes("WAVEfmt "));
+            writer.Write(16);
+            writer.Write((short)1);
+            writer.Write((short)1);
+            writer.Write(sampleRate);
+            writer.Write(sampleRate * (short)(bits / 8));
+            writer.Write((short)(bits / 8));
+            writer.Write(bits);
+            writer.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+            writer.Write(dataLength);
+            writer.Write(new byte[dataLength]);
+        }
+
+        stream.Position = 0;
+        return stream;
     }
 
     private static string? ValidateStyleResources()

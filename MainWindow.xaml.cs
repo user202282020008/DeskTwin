@@ -25,6 +25,8 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private readonly DispatcherTimer _resizeFitTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _aspectTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _muteRetryTimer = new() { Interval = TimeSpan.FromMilliseconds(700) };
+    private int _muteRetryCount;
     private bool _applyingAspect;
     private DesktopSettings _settings = new();
     private bool _suppressEvents = true;
@@ -111,7 +113,15 @@ public partial class MainWindow : Window
         _aspectTimer.Tick += (_, _) =>
         {
             _aspectTimer.Stop();
+        _muteRetryTimer.Stop();
             ApplyAspectToWindow();
+        };
+        _muteRetryTimer.Tick += (_, _) =>
+        {
+            if (!_settings.AudioMuted || _muteRetryCount++ > 20 || ApplyLocalMute())
+            {
+                _muteRetryTimer.Stop();
+            }
         };
         _statusTimer.Tick += (_, _) => RefreshState();
         _resizeFitTimer.Tick += (_, _) =>
@@ -1262,9 +1272,33 @@ public partial class MainWindow : Window
     {
         if (_suppressEvents) return;
         _settings.AudioMuted = MuteMenuItem.IsChecked;
+        // 只是下次连接时的默认参数，当前连接改用它要重连，所以真正的静音走本地音频会话。
         _rdp.SetAudioMuted(_settings.AudioMuted);
         SaveSettings();
-        ReconnectForSettings(_settings.AudioMuted ? "分身音频已设为静音" : "分身音频已开启");
+
+        _muteRetryCount = 0;
+        if (ApplyLocalMute())
+        {
+            SetStatus(_settings.AudioMuted ? "已静音（不影响连接）。" : "已取消静音。");
+            return;
+        }
+
+        // 还没有音频会话（尚未出声）时短时重试，等出声再静音。
+        _muteRetryTimer.Start();
+        SetStatus(_settings.AudioMuted
+            ? "已记住静音，出现声音后自动生效（不重连）。"
+            : "已取消静音。");
+    }
+
+    /// <summary>把当前进程（RDP 控件在同一进程内放音）的音频会话静音，不需要重连。</summary>
+    private bool ApplyLocalMute()
+    {
+        if (AudioSessionMute.TrySetMute(_settings.AudioMuted, out _))
+        {
+            return true;
+        }
+
+        return !_settings.AudioMuted;
     }
 
     private void OnShortcutsToggled(object sender, RoutedEventArgs e)
@@ -1323,6 +1357,13 @@ public partial class MainWindow : Window
         SetStatus("桌面分身已连接，可以直接操作。断开后程序仍会运行。");
         RefreshState();
         SyncDesktopSize("连接完成");
+
+        // 新连接可能重建了音频会话，按当前设置重新应用静音。
+        if (_settings.AudioMuted)
+        {
+            _muteRetryCount = 0;
+            _muteRetryTimer.Start();
+        }
     }
 
     private void OnConnectionFailed(object? sender, ChildSessionConnectionFailedEventArgs e)
@@ -1550,7 +1591,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.3.4\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.3.5\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",
