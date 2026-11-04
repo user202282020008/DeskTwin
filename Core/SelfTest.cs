@@ -200,10 +200,12 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.5",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.6",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
+            // 自检不具管理员权限时无法启用 Child Session，这里只如实记录状态，避免“全绿但根本不能用”。
+            ChildSessionsEnabled = ChildSessionNative.IsEnabled(),
             Checks = checks,
             EnvironmentIssues = issues,
             Passed = checks.All(check => check.Passed)

@@ -28,6 +28,9 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _muteRetryTimer = new() { Interval = TimeSpan.FromMilliseconds(700) };
     private int _muteRetryCount;
     private bool _applyingAspect;
+    private bool _suppressStateChange;
+    private DrawingSize? _pendingDesktopSize;
+    private long _connectingSince;
     private DesktopSettings _settings = new();
     private bool _suppressEvents = true;
     private bool _connecting;
@@ -48,7 +51,7 @@ public partial class MainWindow : Window
     private const int WmHotKey = 0x0312;
     private const int ScMaximize = 0xF030;
     private const int ScreenshotHotKeyId = 0x4455;
-    private const int MinSizingWidth = 640;
+    private const long ConnectTimeoutMs = 45000;
     private DrawingSize _activeDesktopSize = new(1920, 1080);
     private DrawingSize? _resolutionOptionsMonitor;
 
@@ -113,7 +116,6 @@ public partial class MainWindow : Window
         _aspectTimer.Tick += (_, _) =>
         {
             _aspectTimer.Stop();
-        _muteRetryTimer.Stop();
             ApplyAspectToWindow();
         };
         _muteRetryTimer.Tick += (_, _) =>
@@ -215,6 +217,12 @@ public partial class MainWindow : Window
             width = height * reference.Width / reference.Height;
         }
 
+        if (width < MinWidth)
+        {
+            width = MinWidth;
+            height = width * reference.Height / reference.Width;
+        }
+
         if (Math.Abs(Height - height) < 0.5 && Math.Abs(Width - width) < 0.5)
         {
             return;
@@ -309,9 +317,16 @@ public partial class MainWindow : Window
         // 1 左 2 右 3 上 6 下 4 左上 5 右上 7 左下 8 右下
         var keepWidth = edge is not (3 or 6);
         var size = AdaptiveResolution.FitToAspect(width, height, reference, keepWidth);
-        if (size.Width < MinSizingWidth)
+
+        // 与 WPF 的 MinWidth 保持一致，否则拖动时会被布局再拉回去，抖动。
+        var minimumWidth = (int)Math.Max(640, MinWidth);
+        if (size.Width < minimumWidth)
         {
-            size = AdaptiveResolution.FitToAspect(MinSizingWidth, size.Height, reference, keepWidth: true);
+            size = AdaptiveResolution.FitToAspect(
+                minimumWidth,
+                size.Height,
+                reference,
+                keepWidth: keepWidth);
         }
 
         switch (edge)
@@ -491,19 +506,17 @@ public partial class MainWindow : Window
             return;
         }
 
+        var desktop = CurrentDesktopSize;
         var viewWidth = ViewportContainer.ActualWidth;
         var viewHeight = ViewportContainer.ActualHeight;
-        if (viewWidth <= 0
-            || viewHeight <= 0
-            || _activeDesktopSize.Width <= 0
-            || _activeDesktopSize.Height <= 0)
+        if (viewWidth <= 0 || viewHeight <= 0 || desktop.Width <= 0 || desktop.Height <= 0)
         {
             return;
         }
 
         // 窗口比例已经校正过时直接铺满，避免取整后残留一条黑边。
         var viewAspect = viewWidth / viewHeight;
-        var desktopAspect = (double)_activeDesktopSize.Width / _activeDesktopSize.Height;
+        var desktopAspect = (double)desktop.Width / desktop.Height;
         if (Math.Abs(viewAspect - desktopAspect) < 0.01)
         {
             RdpFormsHost.ClearValue(FrameworkElement.WidthProperty);
@@ -513,11 +526,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        var scale = Math.Min(
-            viewWidth / _activeDesktopSize.Width,
-            viewHeight / _activeDesktopSize.Height);
-        RdpFormsHost.Width = Math.Max(1, Math.Round(_activeDesktopSize.Width * scale));
-        RdpFormsHost.Height = Math.Max(1, Math.Round(_activeDesktopSize.Height * scale));
+        var scale = Math.Min(viewWidth / desktop.Width, viewHeight / desktop.Height);
+        RdpFormsHost.Width = Math.Max(1, Math.Round(desktop.Width * scale));
+        RdpFormsHost.Height = Math.Max(1, Math.Round(desktop.Height * scale));
         RdpFormsHost.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
         RdpFormsHost.VerticalAlignment = System.Windows.VerticalAlignment.Center;
     }
@@ -583,7 +594,7 @@ public partial class MainWindow : Window
                     Owner = this
                 };
                 var accepted = notice.ShowDialog() == true;
-                if (notice.DontShowAgain)
+                if (accepted && notice.DontShowAgain)
                 {
                     _settings.SkipStartupWarning = true;
                     StartupWarningMenuItem.IsChecked = false;
@@ -601,6 +612,7 @@ public partial class MainWindow : Window
 
         _busy = true;
         _connecting = true;
+        _connectingSince = Environment.TickCount64;
         SetStatus("正在启用 Child Session 并建立本机 RDP 连接…");
         RefreshState();
         try
@@ -635,6 +647,7 @@ public partial class MainWindow : Window
         try
         {
             _connecting = false;
+            _pendingDesktopSize = null;
             ExitFullscreen(restoreResolution: false);
             _rdp.DisconnectSession();
             SetStatus(ChildSessionNative.GetSessionId() is not null
@@ -651,11 +664,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task EndSessionAsync(bool requireConfirmation)
+    private async Task<bool> EndSessionAsync(bool requireConfirmation)
     {
         if (_busy)
         {
-            return;
+            // 有别的操作在跑，不能假装已经注销。
+            return false;
         }
 
         uint? sessionId;
@@ -666,7 +680,7 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             ShowError("无法读取分身状态", exception);
-            return;
+            return false;
         }
 
         if (sessionId is null)
@@ -674,7 +688,7 @@ public partial class MainWindow : Window
             _connecting = false;
             _rdp.DisconnectSession();
             RefreshState();
-            return;
+            return true;
         }
 
         if (requireConfirmation)
@@ -687,7 +701,7 @@ public partial class MainWindow : Window
                 MessageBoxResult.No);
             if (result != MessageBoxResult.Yes)
             {
-                return;
+                return false;
             }
         }
 
@@ -702,6 +716,7 @@ public partial class MainWindow : Window
             TryDisconnect();
             await Task.Run(() => ChildSessionNative.Logoff(sessionId));
             SetStatus($"桌面分身会话 {sessionId} 已注销。");
+            return true;
         }
         catch (Exception exception)
         {
@@ -1019,7 +1034,17 @@ public partial class MainWindow : Window
         var exitWindow = _fullscreenExitWindow;
         _fullscreenExitWindow = null;
         exitWindow?.Close();
-        _fullscreen.Exit();
+
+        // 退出全屏可能把窗口还原成“最大化”，别让 StateChanged 又把它塞回全屏。
+        _suppressStateChange = true;
+        try
+        {
+            _fullscreen.Exit();
+        }
+        finally
+        {
+            _suppressStateChange = false;
+        }
         FullscreenRow.Height = new GridLength(0);
         HeaderRow.Height = new GridLength(24);
         HeaderBar.Visibility = Visibility.Visible;
@@ -1033,6 +1058,9 @@ public partial class MainWindow : Window
             SyncDesktopSize("退出全屏");
         }
     }
+
+    /// <summary>当前生效（或正在切换）的分身分辨率。</summary>
+    private DrawingSize CurrentDesktopSize => _pendingDesktopSize ?? _activeDesktopSize;
 
     /// <summary>当前应使用的远程分辨率：自适应时跟随画面区/显示器，缩放时用固定值。</summary>
     private DrawingSize ComputeTargetSize()
@@ -1062,7 +1090,15 @@ public partial class MainWindow : Window
         }
 
         var target = ComputeTargetSize();
-        if (target == _activeDesktopSize || !AdaptiveResolution.IsUsable(target))
+        if (!AdaptiveResolution.IsUsable(target))
+        {
+            return;
+        }
+
+        // 取整误差常有 1~2px，低于这个量级不再重连，否则会来回抖。
+        var current = CurrentDesktopSize;
+        if (Math.Abs(target.Width - current.Width) <= 2
+            && Math.Abs(target.Height - current.Height) <= 2)
         {
             return;
         }
@@ -1081,7 +1117,7 @@ public partial class MainWindow : Window
         _resizeFitTimer.Start();
     }
 
-    private void ReconnectAtSize(DrawingSize size, string message)
+    private void ReconnectAtSize(DrawingSize size, string message, bool force = false)
     {
         if (!AdaptiveResolution.IsUsable(size))
         {
@@ -1089,11 +1125,18 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!force && size == CurrentDesktopSize)
+        {
+            return;
+        }
+
         try
         {
             ApplyDisplayScale();
-            _activeDesktopSize = size;
+            // 真正生效要等 OnLoginCompleted，这里只记“待生效”，避免失败后被误认为已达成。
+            _pendingDesktopSize = size;
             _connecting = true;
+            _connectingSince = Environment.TickCount64;
             _rdp.ReconnectToChildSession(size);
             UpdateViewportLayout();
             SetStatus(message
@@ -1144,7 +1187,9 @@ public partial class MainWindow : Window
     /// <summary>点系统的最大化（或双击标题栏、Win+↑）时改为进入应用全屏。</summary>
     private void OnWindowStateChanged()
     {
-        if (WindowState != WindowState.Maximized || _fullscreen.IsFullscreen)
+        if (_suppressStateChange
+            || WindowState != WindowState.Maximized
+            || _fullscreen.IsFullscreen)
         {
             return;
         }
@@ -1324,34 +1369,25 @@ public partial class MainWindow : Window
 
     private void ReconnectForSettings(string message)
     {
-        try
+        if (_rdp.ConnectedState == 0)
         {
-            if (_rdp.ConnectedState != 0)
-            {
-                _connecting = true;
-                ApplyDisplayScale();
-                _activeDesktopSize = ComputeTargetSize();
-                _rdp.ReconnectToChildSession(_activeDesktopSize);
-                SetStatus($"{message}，正在自动重连 RDP…");
-            }
-            else
-            {
-                SetStatus($"{message}，将在下次连接时生效。");
-            }
+            SetStatus($"{message}，将在下次连接时生效。");
+            return;
         }
-        catch (Exception exception)
-        {
-            _connecting = false;
-            ShowError("设置已保存，但自动重连失败", exception);
-        }
-        finally
-        {
-            RefreshState();
-        }
+
+        // 与分辨率切换共用一套重连逻辑，避免两处状态判断不一致。
+        ReconnectAtSize(ComputeTargetSize(), message, force: true);
     }
 
     private void OnLoginCompleted(object? sender, EventArgs e)
     {
+        // 连接成功才把待生效分辨率提交为当前值。
+        if (_pendingDesktopSize is { } applied)
+        {
+            _activeDesktopSize = applied;
+            _pendingDesktopSize = null;
+        }
+
         _connecting = false;
         _rdp.SetInputBlocked(_settings.WatchMode);
         SetStatus("桌面分身已连接，可以直接操作。断开后程序仍会运行。");
@@ -1369,6 +1405,7 @@ public partial class MainWindow : Window
     private void OnConnectionFailed(object? sender, ChildSessionConnectionFailedEventArgs e)
     {
         _connecting = false;
+        _pendingDesktopSize = null;
         ExitFullscreen(restoreResolution: false);
         var issues = EnvironmentCheck.Collect();
         var diagnosis = issues.Count > 0
@@ -1376,11 +1413,14 @@ public partial class MainWindow : Window
             : string.Empty;
         SetStatus("RDP 连接失败，请查看错误详情。");
         RefreshState();
-        MessageBox.Show(
-            e.Message + diagnosis,
-            "桌面分身连接失败",
-            MessageBoxButton.OK,
-            MessageBoxImage.Error);
+        var text = e.Message + diagnosis;
+        if (_closeInProgress || !IsLoaded)
+        {
+            MessageBox.Show(text, "桌面分身连接失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        MessageBox.Show(this, text, "桌面分身连接失败", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     private void RefreshState()
@@ -1435,6 +1475,15 @@ public partial class MainWindow : Window
             ResolutionModeMenu.IsEnabled = !_busy;
             CredentialsMenuItem.IsEnabled = !_busy;
             EndMenuItem.IsEnabled = !_busy && (sessionId is not null || state != 0);
+            if (_connecting
+                && state == 0
+                && Environment.TickCount64 - _connectingSince > ConnectTimeoutMs)
+            {
+                _connecting = false;
+                _pendingDesktopSize = null;
+                SetStatus("连接超时：RDP 没有响应，可以重新点击“连接”。");
+            }
+
             RefreshResolutionOptionsIfMonitorChanged();
             UpdateGlobalHotKeys();
         }
@@ -1501,7 +1550,13 @@ public partial class MainWindow : Window
 
             if (result == MessageBoxResult.Yes)
             {
-                await EndSessionAsync(false);
+                // 注销没成功（例如正有别的操作在跑）就不要假装已经退出。
+                if (!await EndSessionAsync(false))
+                {
+                    Topmost = wasTopmost;
+                    SetStatus("当前有操作正在进行，未能注销分身，已取消退出。");
+                    return;
+                }
             }
             else
             {
@@ -1527,6 +1582,7 @@ public partial class MainWindow : Window
         _statusTimer.Stop();
         _resizeFitTimer.Stop();
         _aspectTimer.Stop();
+        _muteRetryTimer.Stop();
         if (_screenshotHotKeyRegistered)
         {
             ChildSessionNative.UnregisterScreenshotHotKey(_windowHandle, ScreenshotHotKeyId);
@@ -1555,7 +1611,7 @@ public partial class MainWindow : Window
                          + $"当前分身会话：{session?.ToString() ?? "无"}\n"
                          + $"RDP 端口：{ChildSessionNative.GetRdpPort()}\n"
                          + $"分辨率模式：{(_settings.FitToWindow ? "自适应" : "缩放")}\n"
-                         + $"当前分身分辨率：{_activeDesktopSize.Width} × {_activeDesktopSize.Height}\n\n"
+                         + $"当前分身分辨率：{CurrentDesktopSize.Width} × {CurrentDesktopSize.Height}\n\n"
                          + (issues.Count == 0
                              ? "未发现已知兼容性问题。"
                              : EnvironmentCheck.BuildSummary(issues));
@@ -1591,7 +1647,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.3.5\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.3.6\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",
@@ -1638,7 +1694,15 @@ public partial class MainWindow : Window
     {
         var actual = exception.GetBaseException();
         SetStatus($"{title}：{actual.Message}");
-        MessageBox.Show(actual.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+
+        // 关窗过程中把 this 当 owner 会抛异常，其余情况带上 owner 才不会被置顶窗口挡住。
+        if (_closeInProgress || !IsLoaded)
+        {
+            MessageBox.Show(actual.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        MessageBox.Show(this, actual.Message, title, MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
     private static SolidColorBrush Brush(string hex) =>

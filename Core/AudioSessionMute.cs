@@ -44,12 +44,24 @@ internal static class AudioSessionMute
                 return false;
             }
 
-            sessions.GetCount(out var count);
+            if (sessions.GetCount(out var count) != 0)
+            {
+                error = "无法读取音频会话数量。";
+                return false;
+            }
+
             var processId = Environment.ProcessId;
             var applied = false;
             for (var index = 0; index < count; index++)
             {
-                if (sessions.GetSession(index, out var control) != 0 || control is null)
+                if (sessions.GetSession(index, out var control) != 0)
+                {
+                    // 失败也可能带了对象，别把 RCW 漏掉。
+                    Release(control);
+                    continue;
+                }
+
+                if (control is null)
                 {
                     continue;
                 }

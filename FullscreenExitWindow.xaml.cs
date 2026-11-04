@@ -83,6 +83,12 @@ public partial class FullscreenExitWindow : Window
         var animation = new DoubleAnimation(target, hidden ? HideAnimation : ShowAnimation);
         animation.Completed += (_, _) =>
         {
+            // 快速进出热区时，用旧动画的 Completed 覆盖新状态会闪一下。
+            if (_autoHidden != hidden)
+            {
+                return;
+            }
+
             // 远程会话里动画偶发不刷新，结束时兜底写入最终值。
             BeginAnimation(OpacityProperty, null);
             Opacity = target;

@@ -19,7 +19,8 @@ public static class CredentialStore
         "DeskTwin",
         "credentials.dat");
 
-    public static bool HasSavedCredential => File.Exists(FilePath);
+    /// <summary>只有能真正解密出密码才算“已保存”（文件损坏/换了用户时不会误报）。</summary>
+    public static bool HasSavedCredential => Load() is not null;
 
     public static void Save(string userName, string password) =>
         SaveTo(FilePath, userName, password);

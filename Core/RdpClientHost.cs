@@ -19,6 +19,7 @@ internal sealed class RdpClientHost : AxHost
     private const int RedirectAudioToClient = 0;
     private const int DisableRemoteAudio = 2;
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(1);
+    private const long DisconnectCallbackTimeoutMs = 5000;
 
     private static readonly RemoteKey LeftWindowsKey = new(0x5B, IsExtended: true);
     private static readonly RemoteKey DKey = new(0x20, IsExtended: false);
@@ -29,6 +30,7 @@ internal sealed class RdpClientHost : AxHost
     private bool _connectionFailureReported;
     private ChildSessionConnectionFailedEventArgs? _lastConnectionDiagnostic;
     private bool _disconnectRequested;
+    private long _disconnectRequestedAt;
     private bool _sendSystemShortcutsToRemote = true;
     private bool _audioMuted;
     private DrawingSize? _pendingReconnectDesktopSize;
@@ -134,6 +136,14 @@ internal sealed class RdpClientHost : AxHost
             if (!IsHandleCreated)
             {
                 return 0;
+            }
+
+            // Disconnect() 之后若迟迟等不到 OnDisconnected 回调，兜底解锁，
+            // 否则之后所有重连都只会排队、再也不执行。
+            if (_disconnectRequested
+                && Environment.TickCount64 - _disconnectRequestedAt > DisconnectCallbackTimeoutMs)
+            {
+                _disconnectRequested = false;
             }
 
             return Convert.ToInt32(
@@ -362,6 +372,7 @@ internal sealed class RdpClientHost : AxHost
         }
 
         _disconnectRequested = true;
+        _disconnectRequestedAt = Environment.TickCount64;
         try
         {
             InvokeComMethod(GetRequiredOcx(), "Disconnect");
@@ -541,9 +552,7 @@ internal sealed class RdpClientHost : AxHost
         {
             ConnectToChildSession(desktopSize.Value);
         }
-        catch (Exception exception) when (exception is COMException
-                                              or TargetInvocationException
-                                              or InvalidOperationException)
+        catch (Exception exception)
         {
             var actualException = exception.GetBaseException();
             var errorCode = actualException is COMException comException
