@@ -451,7 +451,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.1",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.2",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),

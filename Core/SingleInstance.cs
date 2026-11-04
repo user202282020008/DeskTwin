@@ -49,9 +49,19 @@ internal static class SingleInstance
 
         if (!TryHoldMutex())
         {
-            // 先广播消息让已有实例自己跳到前台，再按进程名兜底找一次。
+            // 先广播消息让已有实例自己跳到前台；托盘里的实例需要一点时间恢复窗口，
+            // 因此轮询几次再判断，避免把“挂在托盘”误判成“没有窗口的残留进程”。
             BroadcastActivate();
-            activated = ActivateExistingInstance();
+            for (var attempt = 0; attempt < 4 && !activated; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    Thread.Sleep(120);
+                }
+
+                activated = ActivateExistingInstance();
+            }
+
             return SingleInstanceState.AlreadyRunning;
         }
 
@@ -59,7 +69,16 @@ internal static class SingleInstance
         if (TryFindOtherInstance(out _))
         {
             BroadcastActivate();
-            activated = ActivateExistingInstance();
+            for (var attempt = 0; attempt < 4 && !activated; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    Thread.Sleep(120);
+                }
+
+                activated = ActivateExistingInstance();
+            }
+
             return SingleInstanceState.AlreadyRunning;
         }
 
@@ -194,15 +213,69 @@ internal static class SingleInstance
         }
     }
 
-    private static bool HasMainWindow(Process process)
+    private static bool HasMainWindow(Process process) => HasVisibleWindow(process);
+
+    /// <summary>
+    /// 结束所有“没有可见窗口”的同名进程。锁被这类残留进程占着时，
+    /// 新实例会被判定为“已在运行”而静默退出，用户看到的就是“打不开”。
+    /// </summary>
+    internal static int KillStaleInstances()
     {
-        if (process.MainWindowHandle != IntPtr.Zero)
+        Process[] processes;
+        try
         {
-            return true;
+            processes = Process.GetProcessesByName(ProcessName);
+        }
+        catch
+        {
+            return 0;
         }
 
-        process.Refresh();
-        return process.MainWindowHandle != IntPtr.Zero;
+        var killed = 0;
+        try
+        {
+            foreach (var process in processes)
+            {
+                if (process.Id == Environment.ProcessId || HasVisibleWindow(process))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    process.Kill();
+                    process.WaitForExit(3000);
+                    killed++;
+                }
+                catch (Exception)
+                {
+                    // 权限不足或已经退出，跳过。
+                }
+            }
+        }
+        finally
+        {
+            foreach (var process in processes)
+            {
+                process.Dispose();
+            }
+        }
+
+        return killed;
+    }
+
+    private static bool HasVisibleWindow(Process process)
+    {
+        if (process.MainWindowHandle == IntPtr.Zero)
+        {
+            process.Refresh();
+            if (process.MainWindowHandle == IntPtr.Zero)
+            {
+                return false;
+            }
+        }
+
+        return IsWindowVisible(process.MainWindowHandle);
     }
 
     /// <summary>向所有顶层窗口广播“请到前台”的消息。</summary>
@@ -253,7 +326,7 @@ internal static class SingleInstance
                     handle = process.MainWindowHandle;
                 }
 
-                if (handle == IntPtr.Zero)
+                if (handle == IntPtr.Zero || !IsWindowVisible(handle))
                 {
                     continue;
                 }
@@ -296,6 +369,10 @@ internal static class SingleInstance
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsIconic(IntPtr window);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr window);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
