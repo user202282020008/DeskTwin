@@ -1,0 +1,17 @@
+# 构建产物
+bin/
+obj/
+artifacts/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.DotSettings.user
+
+# 本地配置与凭据（运行时写在 %LocalAppData%\DeskTwin，不应入库）
+*.pem
+*.key
+credentials.dat
+settings.json

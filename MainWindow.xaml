@@ -1,0 +1,115 @@
+<Window x:Class="DeskTwin.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
+        xmlns:wfi="clr-namespace:System.Windows.Forms.Integration;assembly=WindowsFormsIntegration"
+        Title="桌面分身" Width="1180" Height="740"
+        MinWidth="880" MinHeight="560"
+        Background="#0B0E14" UseLayoutRounding="True"
+        WindowStartupLocation="CenterScreen">
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6" CornerRadius="0"
+                            GlassFrameThickness="0" UseAeroCaptionButtons="False" />
+    </shell:WindowChrome.WindowChrome>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition x:Name="FullscreenRow" Height="0" />
+            <RowDefinition x:Name="HeaderRow" Height="32" />
+            <RowDefinition x:Name="ContentRow" Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- 唯一一条栏：既是标题栏（可拖动/双击全屏），也是连接条与设置入口 -->
+        <Border x:Name="HeaderBar" Grid.Row="1" Background="#FFFFFF"
+                BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1"
+                MouseLeftButtonDown="OnHeaderMouseLeftButtonDown">
+            <Border.ContextMenu>
+                <ContextMenu x:Name="HeaderMenu" FontSize="12" Padding="0,4">
+                    <MenuItem x:Name="SessionInfoMenuItem" IsEnabled="False" FontSize="11" />
+                    <Separator />
+                    <MenuItem x:Name="CredentialsMenuItem" Header="登录凭据…" />
+                    <MenuItem x:Name="LaunchMenuItem" Header="在分身中运行…" />
+                    <MenuItem x:Name="TaskViewMenuItem" Header="切换窗口" InputGestureText="Win+Tab" />
+                    <MenuItem x:Name="ShowDesktopMenuItem" Header="显示桌面" InputGestureText="Win+D" />
+                    <Separator />
+                    <MenuItem x:Name="ResolutionModeMenu" Header="分辨率模式">
+                        <MenuItem x:Name="AdaptiveModeMenuItem" Header="自适应（随窗口改变分辨率）" IsCheckable="True" />
+                        <MenuItem x:Name="ScaledModeMenuItem" Header="缩放（固定分辨率，等比例显示）" IsCheckable="True" />
+                    </MenuItem>
+                    <MenuItem x:Name="ResolutionMenu" Header="分辨率（缩放模式使用）" />
+                    <Separator />
+                    <MenuItem x:Name="WatchMenuItem" Header="观看模式（本机键鼠不进入分身）" IsCheckable="True" />
+                    <MenuItem x:Name="MuteMenuItem" Header="静音" IsCheckable="True" />
+                    <MenuItem x:Name="TopmostMenuItem" Header="窗口置顶" IsCheckable="True" />
+                    <MenuItem x:Name="ShortcutsMenuItem" Header="系统键发送到分身" IsCheckable="True" />
+                    <Separator />
+                    <MenuItem x:Name="ScreenshotMenuItem" Header="截取分身画面" InputGestureText="PrintScreen" />
+                    <MenuItem x:Name="PreflightMenuItem" Header="环境检测" />
+                    <MenuItem x:Name="StartupWarningMenuItem" Header="启动时提示环境风险" IsCheckable="True" />
+                    <MenuItem x:Name="HelpMenuItem" Header="使用帮助" />
+                    <MenuItem x:Name="AboutMenuItem" Header="关于" />
+                    <Separator />
+                    <MenuItem x:Name="EndMenuItem" Header="结束分身" />
+                </ContextMenu>
+            </Border.ContextMenu>
+
+            <Grid Margin="14,0,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="#98A2B3"
+                             VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBlock Text="桌面分身" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <Border x:Name="StatusBadge" Background="#EEF1F5" CornerRadius="8" Padding="6,1.5"
+                            Margin="9,0,0,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="StatusBadgeText" Text="未连接" FontSize="10" Foreground="#5A6473" />
+                    </Border>
+                </StackPanel>
+
+                <TextBlock x:Name="StatusMessage" Grid.Column="1" Text="就绪" FontSize="11"
+                           Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"
+                           Margin="14,0,14,0" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top">
+                    <Button x:Name="DisconnectButton" Content="断开" Style="{StaticResource BarButton}"
+                            Height="31" ToolTip="只断开画面，分身中的程序继续运行" />
+                    <Button x:Name="OptionsButton" Content="选项 ▾" Style="{StaticResource BarButton}"
+                            Height="31" ToolTip="展开全部设置（也可在连接条上点右键）" />
+                    <Border Width="1" Height="14" Background="#E3E8F0" Margin="6,9,6,0" />
+                    <Button x:Name="MinimizeButton" Style="{StaticResource CaptionButton}"
+                            Content="&#xE921;" ToolTip="最小化" />
+                    <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}"
+                            Content="&#xE922;" ToolTip="全屏（系统的最大化按钮同样进入全屏）" />
+                    <Button x:Name="CloseButton" Style="{StaticResource CaptionCloseButton}"
+                            Content="&#xE8BB;" ToolTip="关闭" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- 画面区：像 mstsc 一样铺满，不留边距 -->
+        <Grid x:Name="ViewportContainer" Grid.Row="2" Background="#0B0E14">
+            <wfi:WindowsFormsHost x:Name="RdpFormsHost" Visibility="Collapsed" />
+
+            <Border x:Name="OverlayPanel" Background="#0B0E14">
+                <StackPanel Width="420" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock x:Name="OverlayTitle" Text="桌面分身" TextAlignment="Center"
+                               FontSize="22" FontWeight="SemiBold" Foreground="#F2F5FA" />
+                    <TextBlock x:Name="OverlayDescription" TextAlignment="Center" FontSize="12.5" LineHeight="21"
+                               Foreground="#98A2B3" Margin="0,10,0,0"
+                               Text="在独立会话中运行程序，主桌面与分身互不抢占焦点。断开画面后分身仍在后台运行。" />
+                    <Button x:Name="StartButton" Content="连接" Style="{StaticResource PrimaryButton}"
+                            Height="38" Width="200" Margin="0,26,0,0" HorizontalAlignment="Center" />
+                    <Button x:Name="OverlayStartButton" Content="重新连接现有分身" Style="{StaticResource GhostButton}"
+                            Width="200" Margin="0,8,0,0" HorizontalAlignment="Center"
+                            ToolTip="分身会话仍在后台运行时，只恢复画面" />
+                    <TextBlock Text="需要管理员权限；一个系统最多一个分身会话。在连接条上点右键可打开全部设置。"
+                               TextAlignment="Center" FontSize="10.5" Foreground="#6E7A8D" Margin="0,20,0,0" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>

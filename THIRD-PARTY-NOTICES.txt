@@ -1,0 +1,26 @@
+DeskTwin 1.1.3
+===============
+
+DeskTwin is an independent desktop-child-session utility for Windows.
+
+The RDP ActiveX host implementation and the elevated child-session process
+launch approach are derived from BetterGI:
+
+  BetterGI - Better Genshin Impact
+  https://github.com/babalae/better-genshin-impact
+  Reference revision: 9e3a0b008b063e144982818d46f00c00081ffbd2
+  Copyright: BetterGI contributors
+  License: GNU General Public License version 3
+
+This modified version is distributed under GPL-3.0. It is provided WITHOUT
+ANY WARRANTY, without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See LICENSE.txt for the full license text.
+
+Modification notice: the source was adapted on 2026-11-03 into a standalone
+application with its own UI, settings, diagnostics, documentation, and process
+lifecycle. It does not contain BetterGI game automation, recognition models,
+or branding. The full corresponding source is included in the SOURCE folder.
+
+Windows, Windows Remote Desktop, Windows Child Sessions, and the Microsoft
+RDP ActiveX control are components of Microsoft Windows. DeskTwin invokes
+these system features and does not include or redistribute them.
