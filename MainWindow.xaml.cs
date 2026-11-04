@@ -261,6 +261,20 @@ public partial class MainWindow : Window
         Math.Max(200, MinHeight - chrome.Height));
 
     /// <summary>
+    /// 缩放模式下画面区宽度（DIP）的上限：不能超过所选分辨率的物理宽度换算过来的值。
+    /// 超过就要求 RDP 放大画面，而它只在缩小方向做自适应，结果就是画面卡在左上角、右侧留黑边。
+    /// </summary>
+    internal static double MaxViewportWidth(DrawingSize reference, double dpiScale)
+    {
+        if (reference.Width <= 0)
+        {
+            return 0;
+        }
+
+        return reference.Width / Math.Max(0.1, dpiScale);
+    }
+
+    /// <summary>
     /// 由窗口宽度反推窗口尺寸，使**画面区**（窗口尺寸扣掉标题栏）正好等于分身分辨率比例。
     /// 抽成静态纯函数，自检可以直接断言几何，不依赖窗口是否真的显示出来。
     /// </summary>
@@ -359,6 +373,15 @@ public partial class MainWindow : Window
             return;
         }
 
+        // 画面区不能超过所选分辨率（换算成 DIP）：RDP 只在缩小方向做自适应，
+        // 窗口一旦大于分辨率，画面就会被固定在左上角，右侧出现黑边。
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var maxViewWidth = MaxViewportWidth(reference, dpi.DpiScaleX);
+        if (windowWidth - chrome.Width > maxViewWidth)
+        {
+            windowWidth = maxViewWidth + chrome.Width;
+        }
+
         // 先用当前窗口宽度算出画面区宽度，再按画面比例反推高度，最后把标题栏加回去。
         var fitted = FitWindowToViewportAspect(windowWidth, chrome, reference, minimum);
         var width = fitted.Width;
@@ -455,6 +478,10 @@ public partial class MainWindow : Window
         {
             return false;
         }
+
+        // 拖到比会话分辨率还大没有意义：RDP 不会放大画面，只会右侧留黑边。
+        contentWidth = Math.Min(contentWidth, reference.Width);
+        contentHeight = Math.Min(contentHeight, reference.Height);
 
         // 1 左 2 右 3 上 6 下 4 左上 5 右上 7 左下 8 右下
         var keepWidth = edge is not (3 or 6);
@@ -793,6 +820,13 @@ public partial class MainWindow : Window
             {
                 throw new InvalidOperationException("启动分身需要管理员权限，请运行发布目录中的 DeskTwin.exe。");
             }
+
+            // RDP 的画面自适应只在“缩小”方向可靠；建立会话那一刻的控件尺寸会被当成基准，
+            // 之后控件变大不会放大画面（画面停在左上角，右侧留黑）。所以先完成布局再连。
+            RdpFormsHost.Visibility = Visibility.Visible;
+            UpdateLayout();
+            UpdateViewportLayout();
+            RdpFormsHost.UpdateLayout();
 
             ApplyCredentialsForConnection();
             ChildSessionNative.EnsureEnabled();
@@ -1303,6 +1337,12 @@ public partial class MainWindow : Window
 
         try
         {
+            // 先按目标尺寸把控件摆好，再重连，否则同样会以旧尺寸建立会话。
+            RdpFormsHost.Visibility = Visibility.Visible;
+            UpdateViewportLayout();
+            RdpFormsHost.UpdateLayout();
+            UpdateLayout();
+
             ApplyDisplayScale();
             // 真正生效要等 OnLoginCompleted，这里只记“待生效”，避免失败后被误认为已达成。
             _pendingDesktopSize = size;
@@ -2035,7 +2075,9 @@ public partial class MainWindow : Window
                          + $"RDP 端口：{ChildSessionNative.GetRdpPort()}\n"
                          + $"分辨率模式：{(_settings.FitToWindow ? "自适应" : "缩放")}\n"
                          + $"当前分身分辨率：{CurrentDesktopSize.Width} × {CurrentDesktopSize.Height}\n"
-                         + $"会话缩放：{DescribeSessionScale()}\n\n"
+                         + $"会话缩放：{DescribeSessionScale()}\n"
+                         + $"画面区：{ViewportContainer.ActualWidth:0} × {ViewportContainer.ActualHeight:0}（DIP）\n"
+                         + $"画面控件：{RdpFormsHost.ActualWidth:0} × {RdpFormsHost.ActualHeight:0}（DIP）\n\n"
                          + (issues.Count == 0
                              ? "未发现已知兼容性问题。"
                              : EnvironmentCheck.BuildSummary(issues));
@@ -2072,7 +2114,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.4.2\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.4.3\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",

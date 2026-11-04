@@ -216,6 +216,19 @@ public static class SelfTest
                        + "说明比例没有把标题栏算进去。";
             }
 
+            // 画面区不得超过所选分辨率（DIP 换算）：超过就要 RDP 放大，而它只在缩小方向生效。
+            var maxWidth = MainWindow.MaxViewportWidth(reference, 1.5);
+            var expectedMax = targetWidth / 1.5;
+            if (Math.Abs(maxWidth - expectedMax) > 0.01)
+            {
+                return $"画面区宽度上限计算错误：{maxWidth:0.##}（期望 {expectedMax:0.##}）。";
+            }
+
+            if (maxWidth >= targetWidth)
+            {
+                return "画面区上限没有除以 DPI，窗口会大于分辨率从而出现黑边。";
+            }
+
             // 算出的窗口尺寸要真的能让画面铺满：修正后不应出现黑边。
             var fixedViewport = new System.Windows.Size(
                 fitted.Width - chrome.Width,
@@ -451,7 +464,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.2",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.3",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
