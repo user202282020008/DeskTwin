@@ -305,6 +305,64 @@ public static class SelfTest
 
             return exitCode == 0 ? null : $"关窗后进程退出码异常：{exitCode}。";
         }));
+        checks.Add(RunCheck("托盘图标与挂托盘", () =>
+        {
+            // 1) 托盘图标能用嵌入资源创建（单文件/自定义图标都走这条）。
+            try
+            {
+                using var tray = new TrayIcon();
+                tray.Visible = true;
+                tray.Visible = false;
+            }
+            catch (Exception exception)
+            {
+                return "无法创建托盘图标：" + exception.GetBaseException().Message;
+            }
+
+            // 2) 有会话时关窗选择“挂托盘”：窗口隐藏但**不关闭**，之后能恢复。
+            var window = new MainWindow
+            {
+                WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
+                Left = -8000,
+                Top = -8000,
+                ShowInTaskbar = false,
+                SuppressDialogsForTest = true,
+                HasSessionForTest = true,
+                ClosePromptResultForTest = System.Windows.MessageBoxResult.Yes
+            };
+            var closed = false;
+            window.Closed += (_, _) => closed = true;
+            try
+            {
+                window.Show();
+                PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.Loaded);
+                window.Close();
+                PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+
+                if (closed)
+                {
+                    return "选择挂托盘却把窗口关掉了。";
+                }
+
+                if (window.IsVisible)
+                {
+                    return "选择挂托盘后窗口仍然可见（没有隐藏到托盘）。";
+                }
+
+                window.RestoreFromTrayForTest();
+                PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                if (!window.IsVisible)
+                {
+                    return "从托盘恢复后窗口没有重新显示。";
+                }
+
+                return null;
+            }
+            finally
+            {
+                window.ExitForTest();
+            }
+        }));
         checks.Add(RunCheck("提示窗口布局", () =>
         {
             var window = new NoticeWindow("自检提示", "用于验证“不再显示此提示”对话框能否正常创建。");
@@ -361,7 +419,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.10",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.0",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),

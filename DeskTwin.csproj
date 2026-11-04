@@ -7,9 +7,10 @@
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <AssemblyName>DeskTwin</AssemblyName>
     <RootNamespace>DeskTwin</RootNamespace>
-    <Version>1.3.10</Version>
+    <Version>1.4.0</Version>
     <Authors>DeskTwin contributors</Authors>
     <Description>独立 Windows 桌面分身工具，基于 Windows Child Session 与本机 RDP。</Description>
     <Copyright>2026 DeskTwin contributors; derived from BetterGI (GPL-3.0)</Copyright>
@@ -20,6 +21,8 @@
     <DefaultItemExcludes>$(DefaultItemExcludes);artifacts/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
+    <!-- 托盘图标从资源里取，避免依赖 exe 路径（单文件/dotnet 宿主下都不稳定） -->
+    <Resource Include="app.ico" />
     <Content Include="LICENSE.txt">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

@@ -38,6 +38,8 @@ public partial class MainWindow : Window
     private bool _preflightAcknowledged;
     private bool _closeInProgress;
     private bool _closeApproved;
+    private TrayIcon? _tray;
+    private bool _hiddenToTray;
     private CredentialInput? _sessionCredential;
     private bool _credentialDialogOpen;
     private readonly FullscreenController _fullscreen;
@@ -255,6 +257,9 @@ public partial class MainWindow : Window
 
     /// <summary>自检时强制指定"是否有活动分身"，用来覆盖无会话的关闭路径。</summary>
     internal bool? HasSessionForTest { get; set; }
+
+    /// <summary>自检时直接指定关闭对话框的返回结果（避免弹模态框）。</summary>
+    internal MessageBoxResult? ClosePromptResultForTest { get; set; }
 
     private bool HasActiveSession() =>
         HasSessionForTest
@@ -1662,15 +1667,20 @@ public partial class MainWindow : Window
             var result = MessageBoxResult.Cancel;
             try
             {
-                result = SuppressDialogsForTest
-                    ? MessageBoxResult.Cancel
-                    : MessageBox.Show(
+                result = ClosePromptResultForTest
+                         ?? (SuppressDialogsForTest
+                             ? MessageBoxResult.Cancel
+                             : MessageBox.Show(
                     this,
-                    "退出前请选择如何处理桌面分身：\n\n“是”：注销分身并退出（分身内程序全部关闭）\n“否”：仅断开并退出（分身内程序继续运行）\n“取消”：返回应用\n\n保留分身可能影响 Windows 关机或重启。",
-                    "退出 DeskTwin",
+                    "分身会话还在运行，请选择处理方式：\n\n"
+                    + "“是”：挂到系统托盘（分身继续在后台运行，随时可以从托盘恢复，不结束会话）\n"
+                    + "“否”：结束分身并退出（分身内程序全部关闭）\n"
+                    + "“取消”：返回应用\n\n"
+                    + "保留分身可能影响 Windows 关机或重启。",
+                    "关闭 DeskTwin",
                     MessageBoxButton.YesNoCancel,
-                    MessageBoxImage.Warning,
-                    MessageBoxResult.Cancel);
+                    MessageBoxImage.Question,
+                    MessageBoxResult.Yes));
             }
             finally
             {
@@ -1687,17 +1697,18 @@ public partial class MainWindow : Window
 
             if (result == MessageBoxResult.Yes)
             {
-                // 注销没成功（例如正有别的操作在跑）就不要假装已经退出。
-                if (!await EndSessionAsync(false))
-                {
-                    Topmost = wasTopmost;
-                    SetStatus("当前有操作正在进行，未能注销分身，已取消退出。");
-                    return;
-                }
+                // 不结束会话：断掉画面后挂到托盘，进程继续跑。
+                Topmost = wasTopmost;
+                HideToTray();
+                return;
             }
-            else
+
+            // 注销没成功（例如正有别的操作在跑）就不要假装已经退出。
+            if (!await EndSessionAsync(false))
             {
-                Disconnect();
+                Topmost = wasTopmost;
+                SetStatus("当前有操作正在进行，未能注销分身，已取消退出。");
+                return;
             }
 
             CloseDeferred();
@@ -1713,11 +1724,155 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 挂到系统托盘：断开画面（释放 RDP 占用），分身会话原样留在后台。
+    /// 这是“不结束会话”时的处理方式，进程不退出。
+    /// </summary>
+    private void HideToTray()
+    {
+        EnsureTray();
+        try
+        {
+            Disconnect();
+        }
+        catch (Exception exception)
+        {
+            // 断开失败也要把窗口藏起来，否则用户会以为点了没反应。
+            SetStatus("断开画面失败：" + exception.GetBaseException().Message);
+        }
+
+        ShowInTaskbar = false;
+        Hide();
+        _hiddenToTray = true;
+        UpdateTrayState();
+        if (_tray is not null)
+        {
+            _tray.Visible = true;
+            _tray.ShowHint(
+                "桌面分身已挂到托盘",
+                "分身仍在后台运行。双击通知区域的图标（在 ^ 里可以找到）即可恢复窗口；再次运行 DeskTwin 也会把它叫出来。");
+        }
+    }
+
+    private void EnsureTray()
+    {
+        if (_tray is not null)
+        {
+            return;
+        }
+
+        _tray = new TrayIcon();
+        _tray.OpenRequested += RestoreFromTray;
+        _tray.DisconnectRequested += () =>
+        {
+            try
+            {
+                Disconnect();
+            }
+            catch (Exception exception)
+            {
+                ShowError("断开画面失败", exception);
+            }
+
+            UpdateTrayState();
+        };
+        _tray.EndSessionRequested += () => _ = EndSessionAndExitAsync();
+        _tray.ExitRequested += ExitApplication;
+    }
+
+    private void UpdateTrayState()
+    {
+        if (_tray is null)
+        {
+            return;
+        }
+
+        var sessionId = SafeSessionId();
+        _tray.SetConnected(IsRdpConnected());
+        _tray.ToolTip = sessionId is null
+            ? "桌面分身 · 已挂到托盘"
+            : $"桌面分身 · 会话 {sessionId} 在后台运行";
+    }
+
+    /// <summary>从托盘恢复窗口，并按需把画面接回去。</summary>
+    private void RestoreFromTray()
+    {
+        if (!_hiddenToTray)
+        {
+            if (IsVisible)
+            {
+                ActivateFromOtherInstance();
+            }
+
+            return;
+        }
+
+        _hiddenToTray = false;
+        ShowInTaskbar = true;
+        Show();
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        Activate();
+        if (_tray is not null)
+        {
+            _tray.Visible = false;
+        }
+
+        // 分身还在就把画面接回来，用户不用再点一次“连接”。
+        if (HasSessionForTest is null && SafeSessionId() is not null && !IsRdpConnected())
+        {
+            SetStatus("正在恢复分身画面…");
+            _ = StartAsync();
+        }
+    }
+
+    /// <summary>自检用：从托盘恢复窗口。</summary>
+    internal void RestoreFromTrayForTest() => RestoreFromTray();
+
+    /// <summary>自检用：关闭窗口（跳过确认）。</summary>
+    internal void ExitForTest()
+    {
+        _closeApproved = true;
+        Close();
+    }
+
+    private void ExitApplication()
+    {
+        _hiddenToTray = false;
+        ShowInTaskbar = false;
+        _closeApproved = true;
+        CloseDeferred();
+    }
+
+    private async Task EndSessionAndExitAsync()
+    {
+        try
+        {
+            if (await EndSessionAsync(true))
+            {
+                ExitApplication();
+            }
+        }
+        catch (Exception exception)
+        {
+            ShowError("结束分身失败", exception);
+        }
+    }
+
     /// <summary>另一个 DeskTwin 进程请求把本窗口唤到前台。</summary>
     private void ActivateFromOtherInstance()
     {
         if (_closeInProgress)
         {
+            return;
+        }
+
+        if (_hiddenToTray)
+        {
+            RestoreFromTray();
             return;
         }
 
@@ -1746,6 +1901,30 @@ public partial class MainWindow : Window
         }
     }
 
+    private uint? SafeSessionId()
+    {
+        try
+        {
+            return ChildSessionNative.GetSessionId();
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private bool IsRdpConnected()
+    {
+        try
+        {
+            return _rdp.ConnectedState != 0;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     private void OnWindowClosed(object? sender, EventArgs e)
     {
         _statusTimer.Stop();
@@ -1765,6 +1944,8 @@ public partial class MainWindow : Window
         _rdp.ClearCredentials();
         RdpFormsHost.Child = null;
         _rdp.Dispose();
+        _tray?.Dispose();
+        _tray = null;
         SaveSettings();
 
         // 兜底退出：主窗口已经真的关闭，进程就应该结束。
@@ -1817,9 +1998,10 @@ public partial class MainWindow : Window
             + "7. PrintScreen 在 DeskTwin 窗口内会截取当前分身画面，保存到“图片\\DeskTwin”并复制到剪贴板。\n"
             + "8. 启动时的环境风险提示可勾选“不再显示此提示”；之后可在右键菜单“启动时提示环境风险”里恢复。\n"
             + "9. “断开”只关闭画面，程序继续运行；“结束分身”会注销会话并关闭其中程序。\n"
-            + "10. 分身内需要管理员权限的程序，请通过本应用启动。\n"
-            + "11. 一个 Windows 最多一个 Child Session；部分软件不支持在两个桌面同时运行。\n"
-            + "12. 关机或重启前请先结束分身。\n\n"
+            + "10. 关闭窗口时若分身还在，会问你怎么处理：选“是”挂到系统托盘（不断开会话，进程继续跑，双击托盘图标或用托盘菜单可恢复），选“否”结束分身并退出。\n"
+            + "11. 分身内需要管理员权限的程序，请通过本应用启动。\n"
+            + "12. 一个 Windows 最多一个 Child Session；部分软件不支持在两个桌面同时运行。\n"
+            + "13. 关机或重启前请先结束分身。\n\n"
             + "此工具使用普通 RDP 鼠标，不包含 BetterGI 针对原神定制的 Raw Input 相对鼠标转发。",
             "桌面分身 · 使用帮助",
             MessageBoxButton.OK,
@@ -1829,7 +2011,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.3.10\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.4.0\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",
