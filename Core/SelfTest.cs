@@ -166,6 +166,11 @@ public static class SelfTest
             }
 
             var checkedItems = items.Where(item => item.IsChecked).ToList();
+            if (window.ResolutionMenu.Items.Count == 0)
+            {
+                return "分辨率菜单为空（默认值没有按本机补齐）。";
+            }
+
             if (checkedItems.Count != 1)
             {
                 return "分辨率菜单没有唯一的勾选项。";
@@ -498,17 +503,33 @@ public static class SelfTest
                 System.Windows.Threading.DispatcherPriority.Loaded);
             System.Threading.Thread.Sleep(200);
 
-            KeybdEvent(VkSnapshot, 0, 0);
-            KeybdEvent(VkSnapshot, 0, KeyEventKeyUp);
-            for (var i = 0; i < 4 && pressed == 0; i++)
+            for (var attempt = 0; attempt < 3 && pressed == 0; attempt++)
             {
-                PumpDispatcher(
-                    System.Windows.Threading.Dispatcher.CurrentDispatcher,
-                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-                System.Threading.Thread.Sleep(80);
+                KeybdEvent(VkSnapshot, 0, 0);
+                KeybdEvent(VkSnapshot, 0, KeyEventKeyUp);
+                for (var i = 0; i < 4 && pressed == 0; i++)
+                {
+                    PumpDispatcher(
+                        System.Windows.Threading.Dispatcher.CurrentDispatcher,
+                        System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                    System.Threading.Thread.Sleep(80);
+                }
             }
 
-            return pressed > 0 ? null : "钩子装上但没收到 PrintScreen。";
+            if (pressed > 0)
+            {
+                return null;
+            }
+
+            // 用户同时开着另一个 DeskTwin 时，按键会先被那个实例的钩子截走，
+            // 这种情况下无法判断本进程钩子是否失效，按“环境干扰”处理而不是误报失败。
+            if (SingleInstance.HasOtherVisibleInstance())
+            {
+                Console.WriteLine("PrintScreen 钩子：检测到其他 DeskTwin 实例，跳过本次按键验证。");
+                return null;
+            }
+
+            return "钩子装上但没收到 PrintScreen。";
         }));
         checks.Add(RunCheck("退出但保留分身", () =>
         {
@@ -592,16 +613,25 @@ public static class SelfTest
             File.WriteAllText(probe, JsonSerializer.Serialize(settings));
             var restored = JsonSerializer.Deserialize<DesktopSettings>(File.ReadAllText(probe));
             File.Delete(probe);
-            return restored?.DesktopWidth == 1920 && restored.DesktopHeight == 1080
-                ? null
-                : "配置序列化结果不正确。";
+            if (restored is null)
+            {
+                return "配置反序列化失败。";
+            }
+
+            // 默认值：缩放模式 + 分辨率留空（0 = 跟随本机）
+            if (restored.FitToWindow || restored.DesktopWidth != 0 || restored.DesktopHeight != 0)
+            {
+                return "配置默认值与预期不符（应为缩放模式、分辨率留空）。";
+            }
+
+            return restored.SendSystemShortcuts ? null : "配置项没有正确往返。";
         }));
 
         var issues = EnvironmentCheck.Collect();
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.6",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.7",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
@@ -761,7 +791,18 @@ public static class SelfTest
         }
 
         var settings = new DesktopSettings();
-        return settings.FitToWindow ? null : "默认分辨率模式应为自适应。";
+        if (settings.FitToWindow)
+        {
+            return "默认分辨率模式应为缩放。";
+        }
+
+        if (settings.DesktopWidth != 0 || settings.DesktopHeight != 0)
+        {
+            return "默认分辨率应留空（0 = 跟随本机），实际 "
+                   + $"{settings.DesktopWidth} × {settings.DesktopHeight}。";
+        }
+
+        return null;
     }
 
     /// <summary>起一个带指定参数的自检探针子进程，返回退出码；超时则 timedOut = true。</summary>

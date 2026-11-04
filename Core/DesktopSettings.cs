@@ -5,10 +5,11 @@ namespace DeskTwin.Core;
 
 public sealed class DesktopSettings
 {
-    public int DesktopWidth { get; set; } = 1920;
-    public int DesktopHeight { get; set; } = 1080;
-    /// <summary>true：自适应模式（分辨率随窗口变化）；false：缩放模式（固定分辨率、等比缩放）。</summary>
-    public bool FitToWindow { get; set; } = true;
+    /// <summary>分身分辨率；0 表示“跟随本机”，启动时按当前显示器分辨率补齐。</summary>
+    public int DesktopWidth { get; set; }
+    public int DesktopHeight { get; set; }
+    /// <summary>true：自适应模式（分辨率随窗口变化）；false：缩放模式（固定分辨率、等比缩放，默认）。</summary>
+    public bool FitToWindow { get; set; }
     /// <summary>缩放模式下会话缩放（100/140/180）；0 表示跟随系统 DPI。</summary>
     public int SessionScaleFactor { get; set; }
 
@@ -40,14 +41,15 @@ public static class SettingsService
 
             var settings = JsonSerializer.Deserialize<DesktopSettings>(
                 File.ReadAllText(SettingsPath), JsonOptions) ?? new DesktopSettings();
+            // 非法值统一归零，由调用方按“跟随本机”补齐。
             if (settings.DesktopWidth is < 200 or > 8192)
             {
-                settings.DesktopWidth = 1920;
+                settings.DesktopWidth = 0;
             }
 
             if (settings.DesktopHeight is < 200 or > 8192)
             {
-                settings.DesktopHeight = 1080;
+                settings.DesktopHeight = 0;
             }
 
             return settings;

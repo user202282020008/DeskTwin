@@ -215,6 +215,9 @@ internal static class SingleInstance
 
     private static bool HasMainWindow(Process process) => HasVisibleWindow(process);
 
+    /// <summary>自检用：是否还有别的可见实例在跑（会影响按键钩子的归属）。</summary>
+    internal static bool HasOtherVisibleInstance() => TryFindOtherInstance(out _);
+
     /// <summary>
     /// 结束所有“没有可见窗口”的同名进程。锁被这类残留进程占着时，
     /// 新实例会被判定为“已在运行”而静默退出，用户看到的就是“打不开”。
