@@ -350,6 +350,57 @@ public static class SelfTest
 
             return exitCode == 0 ? null : $"关窗后进程退出码异常：{exitCode}。";
         }));
+        checks.Add(RunCheck("全屏右键菜单", () =>
+        {
+            // 1) 鼠标钩子能装能卸（全屏时靠它接管右键，否则 RDP 控件会吃掉右键）。
+            try
+            {
+                using var hook = new MouseHook();
+                if (!hook.Install())
+                {
+                    return "无法安装鼠标钩子。";
+                }
+            }
+            catch (Exception exception)
+            {
+                return "鼠标钩子异常：" + exception.GetBaseException().Message;
+            }
+
+            // 2) 非全屏时绝不能拦截右键，否则远程桌面里的右键操作就没了。
+            var window = new MainWindow
+            {
+                WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
+                Left = -8000,
+                Top = -8000,
+                ShowInTaskbar = false,
+                SuppressDialogsForTest = true,
+                HasSessionForTest = false
+            };
+            window.Show();
+            try
+            {
+                PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.Loaded);
+                if (window.IsFullscreenRightClickTargetForTest(100, 100))
+                {
+                    return "非全屏时不应接管右键。";
+                }
+
+                // 3) 菜单能在指定屏幕坐标弹出（坐标取屏幕外，不打扰用户）。
+                window.ShowContextMenuAt(-7000, 200);
+                PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                if (!window.HeaderMenu.IsOpen)
+                {
+                    return "右键菜单没有打开。";
+                }
+
+                return null;
+            }
+            finally
+            {
+                window.HeaderMenu.IsOpen = false;
+                window.ExitForTest();
+            }
+        }));
         checks.Add(RunCheck("关闭对话框三选一", () =>
         {
             var dialog = new CloseChoiceWindow();
@@ -550,7 +601,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.5",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.6",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
