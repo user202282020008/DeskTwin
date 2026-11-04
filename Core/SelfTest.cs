@@ -293,6 +293,18 @@ public static class SelfTest
                 ? null
                 : $"第二个实例没有被拦住（退出码 {exitCode}，期望 4）。";
         }));
+        checks.Add(RunCheck("关窗后进程能自行退出", () =>
+        {
+            // 回归用例：窗口关掉、进程却还在（任务管理器里出现无窗口的 DeskTwin）。
+            // 起一个子进程走真实启动路径，2 秒后自行关闭，必须在超时前以 0 退出。
+            var exitCode = RunProbe("--probe-close-exit", 25000, out var timedOut);
+            if (timedOut)
+            {
+                return "关窗后进程 25 秒仍未退出（残留进程）。";
+            }
+
+            return exitCode == 0 ? null : $"关窗后进程退出码异常：{exitCode}。";
+        }));
         checks.Add(RunCheck("提示窗口布局", () =>
         {
             var window = new NoticeWindow("自检提示", "用于验证“不再显示此提示”对话框能否正常创建。");
@@ -349,7 +361,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.9",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.10",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
@@ -510,6 +522,55 @@ public static class SelfTest
 
         var settings = new DesktopSettings();
         return settings.FitToWindow ? null : "默认分辨率模式应为自适应。";
+    }
+
+    /// <summary>起一个带指定参数的自检探针子进程，返回退出码；超时则 timedOut = true。</summary>
+    private static int RunProbe(string argument, int timeoutMs, out bool timedOut)
+    {
+        timedOut = false;
+        var host = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(host))
+        {
+            return -1;
+        }
+
+        var entryArgument = Environment.GetCommandLineArgs().FirstOrDefault();
+        var arguments = host.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase)
+                        && entryArgument?.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) == true
+            ? $"\"{entryArgument}\" {argument}"
+            : argument;
+
+        var startInfo = new System.Diagnostics.ProcessStartInfo(host, arguments)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        using var process = System.Diagnostics.Process.Start(startInfo);
+        if (process is null)
+        {
+            return -1;
+        }
+
+        process.StandardOutput.ReadToEnd();
+        if (!process.WaitForExit(timeoutMs))
+        {
+            timedOut = true;
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // 已经退出就忽略。
+            }
+
+            return -1;
+        }
+
+        return process.ExitCode;
     }
 
     /// <summary>启动一个 --probe-instance 子进程，返回它的退出码（4 = 已被占用）。</summary>
