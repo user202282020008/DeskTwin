@@ -267,6 +267,32 @@ public static class SelfTest
                 }
             }
         }));
+        checks.Add(RunCheck("单实例与嵌套保护", () =>
+        {
+            // 1) 纯逻辑：进程所在会话 == 本机 Child Session 时才算“在分身里”。
+            if (!SingleInstance.WouldBeNested(childSessionId: 2, currentSessionId: 2))
+            {
+                return "会话相同却没有判定为嵌套。";
+            }
+
+            if (SingleInstance.WouldBeNested(childSessionId: 2, currentSessionId: 1))
+            {
+                return "主会话被误判为嵌套（会挡住正常启动）。";
+            }
+
+            if (SingleInstance.WouldBeNested(childSessionId: null, currentSessionId: 1)
+                || SingleInstance.WouldBeNested(childSessionId: 0, currentSessionId: 0))
+            {
+                return "没有 Child Session 时被误判为嵌套。";
+            }
+
+            // 2) 真机：先占住互斥体，再起一个子进程，它必须报告“已在运行”并退出。
+            SingleInstance.TryHoldMutexForTest();
+            var exitCode = ProbeSecondInstance();
+            return exitCode == 4
+                ? null
+                : $"第二个实例没有被拦住（退出码 {exitCode}，期望 4）。";
+        }));
         checks.Add(RunCheck("提示窗口布局", () =>
         {
             var window = new NoticeWindow("自检提示", "用于验证“不再显示此提示”对话框能否正常创建。");
@@ -323,7 +349,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.8",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.9",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
@@ -484,6 +510,43 @@ public static class SelfTest
 
         var settings = new DesktopSettings();
         return settings.FitToWindow ? null : "默认分辨率模式应为自适应。";
+    }
+
+    /// <summary>启动一个 --probe-instance 子进程，返回它的退出码（4 = 已被占用）。</summary>
+    private static int ProbeSecondInstance()
+    {
+        var host = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(host))
+        {
+            return -1;
+        }
+
+        // 不能用 Assembly.Location：单文件发布下它恒为空（IL3000）。
+        // 命令行第 0 项在 dotnet 宿主下就是 dll 路径，在单文件下就是 exe 路径。
+        var entryArgument = Environment.GetCommandLineArgs().FirstOrDefault();
+        var arguments = host.EndsWith("dotnet.exe", StringComparison.OrdinalIgnoreCase)
+                        && entryArgument?.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) == true
+            ? $"\"{entryArgument}\" --probe-instance"
+            : "--probe-instance";
+
+        var startInfo = new System.Diagnostics.ProcessStartInfo(host, arguments)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        using var process = System.Diagnostics.Process.Start(startInfo);
+        if (process is null)
+        {
+            return -1;
+        }
+
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit(20000);
+        Console.WriteLine("probe-instance: " + output.Trim());
+        return process.HasExited ? process.ExitCode : -2;
     }
 
     private static void PumpDispatcher(

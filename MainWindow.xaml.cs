@@ -1343,6 +1343,15 @@ public partial class MainWindow : Window
         IntPtr lParam,
         ref bool handled)
     {
+        if (SingleInstance.ActivateMessage != 0
+            && message == (int)SingleInstance.ActivateMessage)
+        {
+            // 用户又双击了一次 DeskTwin：把已有窗口唤到前台，新进程随即自行退出。
+            ActivateFromOtherInstance();
+            handled = true;
+            return IntPtr.Zero;
+        }
+
         if (message == WmHotKey && wParam.ToInt32() == ScreenshotHotKeyId)
         {
             CaptureScreenshot();
@@ -1704,6 +1713,39 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>另一个 DeskTwin 进程请求把本窗口唤到前台。</summary>
+    private void ActivateFromOtherInstance()
+    {
+        if (_closeInProgress)
+        {
+            return;
+        }
+
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        var wasTopmost = Topmost;
+        try
+        {
+            // 前台锁会让 Activate() 无效，短暂置顶可以稳定抢到前台。
+            if (!wasTopmost)
+            {
+                Topmost = true;
+            }
+
+            Activate();
+        }
+        finally
+        {
+            if (!wasTopmost)
+            {
+                Topmost = false;
+            }
+        }
+    }
+
     private void OnWindowClosed(object? sender, EventArgs e)
     {
         _statusTimer.Stop();
@@ -1774,7 +1816,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.3.8\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.3.9\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",
