@@ -44,8 +44,10 @@ dotnet build -c Release
 # 单文件、自包含发布（win-x64）
 dotnet publish -c Release -r win-x64 --self-contained true \
   -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true \
-  -o out
+  -o artifacts
 ```
+
+构建产物固定输出到 `artifacts/`（已在 `.gitignore` 中，永远不入库），**只保留一份最新的 `DeskTwin.exe`**，不按版本建目录；源码历史交给 git 管理。
 
 自检（不需要管理员，检查 XAML、DPAPI、全屏边界、分辨率换算等）：
 
