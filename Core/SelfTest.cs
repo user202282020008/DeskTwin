@@ -124,6 +124,24 @@ public static class SelfTest
                 return "分辨率菜单没有唯一的勾选项。";
             }
 
+            // 缩放模式应把窗口锁成分身分辨率的宽高比（否则画面四周会留黑边）。
+            var scaled = items.First(item => item.IsChecked).Tag as string;
+            var parts = scaled?.Split('x');
+            if (parts?.Length == 2
+                && int.TryParse(parts[0], out var targetWidth)
+                && int.TryParse(parts[1], out var targetHeight)
+                && targetWidth > 0
+                && targetHeight > 0)
+            {
+                window.SetResolutionModeForTest(fitToWindow: false);
+                var windowAspect = window.Width / window.Height;
+                var desktopAspect = (double)targetWidth / targetHeight;
+                if (Math.Abs(windowAspect - desktopAspect) > 0.02)
+                {
+                    return $"缩放模式窗口比例 {windowAspect:0.000} 未对齐画面比例 {desktopAspect:0.000}，会留黑边。";
+                }
+            }
+
             return null;
         }));
         checks.Add(RunCheck("提示窗口布局", () =>
@@ -156,7 +174,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.3",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.4",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),

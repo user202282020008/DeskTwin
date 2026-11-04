@@ -15,7 +15,7 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition x:Name="FullscreenRow" Height="0" />
-            <RowDefinition x:Name="HeaderRow" Height="32" />
+            <RowDefinition x:Name="HeaderRow" Height="24" />
             <RowDefinition x:Name="ContentRow" Height="*" />
         </Grid.RowDefinitions>
 
@@ -49,11 +49,12 @@
                     <MenuItem x:Name="HelpMenuItem" Header="使用帮助" />
                     <MenuItem x:Name="AboutMenuItem" Header="关于" />
                     <Separator />
+                    <MenuItem x:Name="DisconnectMenuItem" Header="断开画面" InputGestureText="程序继续运行" />
                     <MenuItem x:Name="EndMenuItem" Header="结束分身" />
                 </ContextMenu>
             </Border.ContextMenu>
 
-            <Grid Margin="14,0,0,0">
+            <Grid Margin="12,0,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
@@ -63,23 +64,18 @@
                 <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse x:Name="StatusDot" Width="7" Height="7" Fill="#98A2B3"
                              VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <TextBlock Text="桌面分身" FontSize="12.5" FontWeight="SemiBold" VerticalAlignment="Center" />
-                    <Border x:Name="StatusBadge" Background="#EEF1F5" CornerRadius="8" Padding="6,1.5"
+                    <TextBlock Text="桌面分身" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <Border x:Name="StatusBadge" Background="#EEF1F5" CornerRadius="7" Padding="5,0.5"
                             Margin="9,0,0,0" VerticalAlignment="Center">
-                        <TextBlock x:Name="StatusBadgeText" Text="未连接" FontSize="10" Foreground="#5A6473" />
+                        <TextBlock x:Name="StatusBadgeText" Text="未连接" FontSize="9.5" Foreground="#5A6473" />
                     </Border>
                 </StackPanel>
 
-                <TextBlock x:Name="StatusMessage" Grid.Column="1" Text="就绪" FontSize="11"
+                <TextBlock x:Name="StatusMessage" Grid.Column="1" Text="就绪" FontSize="10.5"
                            Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"
                            Margin="14,0,14,0" TextTrimming="CharacterEllipsis" TextWrapping="NoWrap" />
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top">
-                    <Button x:Name="DisconnectButton" Content="断开" Style="{StaticResource BarButton}"
-                            Height="31" ToolTip="只断开画面，分身中的程序继续运行" />
-                    <Button x:Name="OptionsButton" Content="选项 ▾" Style="{StaticResource BarButton}"
-                            Height="31" ToolTip="展开全部设置（也可在连接条上点右键）" />
-                    <Border Width="1" Height="14" Background="#E3E8F0" Margin="6,9,6,0" />
                     <Button x:Name="MinimizeButton" Style="{StaticResource CaptionButton}"
                             Content="&#xE921;" ToolTip="最小化" />
                     <Button x:Name="MaximizeButton" Style="{StaticResource CaptionButton}"

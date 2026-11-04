@@ -24,6 +24,8 @@ public partial class MainWindow : Window
     private readonly RdpClientHost _rdp = new();
     private readonly DispatcherTimer _statusTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     private readonly DispatcherTimer _resizeFitTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    private readonly DispatcherTimer _aspectTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private bool _applyingAspect;
     private DesktopSettings _settings = new();
     private bool _suppressEvents = true;
     private bool _connecting;
@@ -62,8 +64,7 @@ public partial class MainWindow : Window
 
         StartButton.Click += async (_, _) => await StartAsync();
         OverlayStartButton.Click += async (_, _) => await StartAsync();
-        DisconnectButton.Click += (_, _) => Disconnect();
-        OptionsButton.Click += (_, _) => OpenOptionsMenu();
+        DisconnectMenuItem.Click += (_, _) => Disconnect();
         MinimizeButton.Click += (_, _) => WindowState = WindowState.Minimized;
         MaximizeButton.Click += (_, _) => ToggleFullscreen();
         CloseButton.Click += (_, _) => Close();
@@ -106,6 +107,12 @@ public partial class MainWindow : Window
             UpdateViewportLayout();
             ScheduleFitSync();
         };
+        SizeChanged += (_, _) => ScheduleAspectFix();
+        _aspectTimer.Tick += (_, _) =>
+        {
+            _aspectTimer.Stop();
+            ApplyAspectToWindow();
+        };
         _statusTimer.Tick += (_, _) => RefreshState();
         _resizeFitTimer.Tick += (_, _) =>
         {
@@ -146,6 +153,13 @@ public partial class MainWindow : Window
         ApplyAspectToWindow();
     }
 
+    /// <summary>自检用：切换分辨率模式并立即应用（不会写配置）。</summary>
+    internal void SetResolutionModeForTest(bool fitToWindow)
+    {
+        _settings.FitToWindow = fitToWindow;
+        ApplySettingsToControls();
+    }
+
     /// <summary>
     /// 缩放模式下把窗口锁成分身分辨率的宽高比，画面正好铺满、四周没有黑边。
     /// </summary>
@@ -160,6 +174,22 @@ public partial class MainWindow : Window
         if (!AdaptiveResolution.IsUsable(reference))
         {
             return;
+        }
+
+        // 最大化会让窗口比例和画面不一致（出现黑边），这里退回普通窗口并按比例铺到工作区。
+        if (WindowState == WindowState.Maximized)
+        {
+            WindowState = WindowState.Normal;
+            if (GetCurrentWorkAreaDips() is { } work)
+            {
+                var fitted = FitInside(work.Width - 16, work.Height - 16, reference);
+                SetWindowRect(
+                    work.X + (work.Width - fitted.Width) / 2,
+                    work.Y + (work.Height - fitted.Height) / 2,
+                    fitted.Width,
+                    fitted.Height);
+                return;
+            }
         }
 
         var width = double.IsNaN(Width) || Width <= 0 ? ActualWidth : Width;
@@ -180,8 +210,71 @@ public partial class MainWindow : Window
             return;
         }
 
-        Width = width;
-        Height = height;
+        SetWindowRect(Left, Top, width, height);
+    }
+
+    private void SetWindowRect(double left, double top, double width, double height)
+    {
+        _applyingAspect = true;
+        try
+        {
+            if (!double.IsNaN(left) && !double.IsNaN(top))
+            {
+                Left = left;
+                Top = top;
+            }
+
+            Width = width;
+            Height = height;
+        }
+        finally
+        {
+            _applyingAspect = false;
+        }
+    }
+
+    /// <summary>在给定盒子内放下指定比例的矩形（先试按宽、不行再按高）。</summary>
+    private static DrawingSize FitInside(double boxWidth, double boxHeight, DrawingSize reference)
+    {
+        var byWidth = AdaptiveResolution.FitToAspect(
+            (int)Math.Max(1, boxWidth), (int)Math.Max(1, boxHeight), reference, keepWidth: true);
+        return byWidth.Height <= boxHeight
+            ? byWidth
+            : AdaptiveResolution.FitToAspect(
+                (int)Math.Max(1, boxWidth), (int)Math.Max(1, boxHeight), reference, keepWidth: false);
+    }
+
+    /// <summary>当前窗口所在显示器的工作区（DIP）。</summary>
+    private Rect? GetCurrentWorkAreaDips()
+    {
+        var handle = _windowHandle != IntPtr.Zero
+            ? _windowHandle
+            : new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return null;
+        }
+
+        var screen = System.Windows.Forms.Screen.FromHandle(handle);
+        var scale = VisualTreeHelper.GetDpi(this);
+        var area = screen.WorkingArea;
+        return new Rect(
+            area.X / scale.DpiScaleX,
+            area.Y / scale.DpiScaleY,
+            area.Width / scale.DpiScaleX,
+            area.Height / scale.DpiScaleY);
+    }
+
+    /// <summary>窗口尺寸变化后（拖拽、贴边、程序改动）延时把比例拉回画面比例。</summary>
+    private void ScheduleAspectFix()
+    {
+        if (_settings.FitToWindow || _fullscreen.IsFullscreen || _applyingAspect)
+        {
+            return;
+        }
+
+        _aspectTimer.Stop();
+        _aspectTimer.Start();
     }
 
     /// <summary>
@@ -816,13 +909,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void OpenOptionsMenu()
-    {
-        HeaderMenu.PlacementTarget = HeaderBar;
-        HeaderMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom;
-        HeaderMenu.IsOpen = true;
-    }
-
     private void OnHeaderMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ClickCount == 2)
@@ -925,11 +1011,12 @@ public partial class MainWindow : Window
         exitWindow?.Close();
         _fullscreen.Exit();
         FullscreenRow.Height = new GridLength(0);
-        HeaderRow.Height = new GridLength(32);
+        HeaderRow.Height = new GridLength(24);
         HeaderBar.Visibility = Visibility.Visible;
         ViewportContainer.Margin = new Thickness(0);
         SetStatus("已退出全屏。");
         UpdateViewportLayout();
+        ApplyAspectToWindow();
 
         if (restoreResolution)
         {
@@ -1298,8 +1385,7 @@ public partial class MainWindow : Window
             OverlayStartButton.Visibility = sessionId is null
                 ? Visibility.Collapsed
                 : Visibility.Visible;
-            DisconnectButton.IsEnabled = !_busy && state != 0;
-            DisconnectButton.Visibility = state != 0 ? Visibility.Visible : Visibility.Collapsed;
+            DisconnectMenuItem.IsEnabled = !_busy && state != 0;
             LaunchMenuItem.IsEnabled = !_busy && sessionId is not null;
             TaskViewMenuItem.IsEnabled = !_busy && state == 1;
             ShowDesktopMenuItem.IsEnabled = !_busy && state == 1;
@@ -1399,6 +1485,7 @@ public partial class MainWindow : Window
     {
         _statusTimer.Stop();
         _resizeFitTimer.Stop();
+        _aspectTimer.Stop();
         if (_screenshotHotKeyRegistered)
         {
             ChildSessionNative.UnregisterScreenshotHotKey(_windowHandle, ScreenshotHotKeyId);
@@ -1463,7 +1550,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.3.3\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.3.4\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",

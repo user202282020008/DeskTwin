@@ -122,10 +122,10 @@
             </Style>
             <!-- 自绘标题栏的最小化 / 全屏按钮 -->
             <Style x:Key="CaptionButton" TargetType="Button">
-                <Setter Property="Width" Value="40" />
-                <Setter Property="Height" Value="31" />
+                <Setter Property="Width" Value="38" />
+                <Setter Property="Height" Value="23" />
                 <Setter Property="FontFamily" Value="Segoe MDL2 Assets" />
-                <Setter Property="FontSize" Value="10" />
+                <Setter Property="FontSize" Value="9" />
                 <Setter Property="Foreground" Value="#3D4757" />
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="Cursor" Value="Hand" />
