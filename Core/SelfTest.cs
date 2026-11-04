@@ -8,6 +8,20 @@ public static class SelfTest
 {
     public static bool Run(string outputPath)
     {
+        // 自检会创建并关闭窗口；默认的 OnLastWindowClose 会让 Application 进入关闭流程，
+        // 之后再建窗口就会报“应用程序对象正在关闭”。整个自检期间改为显式关闭。
+        if (System.Windows.Application.Current is { } application)
+        {
+            try
+            {
+                application.ShutdownMode = System.Windows.ShutdownMode.OnExplicitShutdown;
+            }
+            catch (InvalidOperationException)
+            {
+                // 已经在关闭流程里时无法修改，忽略即可。
+            }
+        }
+
         var checks = new List<SelfTestResult>();
         checks.Add(RunCheck("Windows x64", () =>
             Environment.Is64BitOperatingSystem ? null : "需要 64 位 Windows。"));
@@ -194,6 +208,65 @@ public static class SelfTest
 
             return null;
         }));
+        checks.Add(RunCheck("关闭窗口不抛“正在关闭”异常", () =>
+        {
+            // 回归用例：过去在 Closing 事件里同步调用 Close()，WPF 已把窗口标记为 closing，
+            // 会抛“在窗口关闭期间，无法…调用 Show、ShowDialog、Close”，表现为点 ✕ 后弹错误框。
+            MainWindow? window = null;
+            try
+            {
+                window = new MainWindow
+                {
+                    WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
+                    Left = -8000,
+                    Top = -8000,
+                    ShowInTaskbar = false,
+                    SuppressDialogsForTest = true,
+                    // 强制走“没有分身会话”的关闭路径：这台机器平时可能正开着分身，
+                    // 否则会走“有会话→弹确认框”的分支，永远测不到真正出问题的那条路。
+                    HasSessionForTest = false
+                };
+                var closed = false;
+                Exception? failure = null;
+                window.Closed += (_, _) => closed = true;
+                window.Show();
+                PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.Loaded);
+
+                try
+                {
+                    window.Close();
+                }
+                catch (Exception exception)
+                {
+                    failure = exception;
+                }
+
+                for (var i = 0; i < 8 && !closed; i++)
+                {
+                    PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                }
+
+                if (failure is not null)
+                {
+                    return "关闭窗口抛异常：" + failure.GetBaseException().Message;
+                }
+
+                if (!closed)
+                {
+                    return "无会话时点关闭，窗口没有真正关闭（关闭流程被吞掉）。";
+                }
+
+                return null;
+            }
+            finally
+            {
+                if (window is { IsVisible: true })
+                {
+                    window.SuppressDialogsForTest = true;
+                    window.Close();
+                }
+            }
+        }));
         checks.Add(RunCheck("提示窗口布局", () =>
         {
             var window = new NoticeWindow("自检提示", "用于验证“不再显示此提示”对话框能否正常创建。");
@@ -250,7 +323,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.7",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.8",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
@@ -412,6 +485,11 @@ public static class SelfTest
         var settings = new DesktopSettings();
         return settings.FitToWindow ? null : "默认分辨率模式应为自适应。";
     }
+
+    private static void PumpDispatcher(
+        System.Windows.Threading.Dispatcher dispatcher,
+        System.Windows.Threading.DispatcherPriority priority) =>
+        dispatcher.Invoke(() => { }, priority);
 
     /// <summary>生成 0.25 秒静音 PCM WAV，仅用于制造音频会话。</summary>
     private static Stream CreateSilentWav()

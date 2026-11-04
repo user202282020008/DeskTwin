@@ -250,12 +250,23 @@ public partial class MainWindow : Window
         return new System.Windows.Size(viewWidth + chrome.Width, viewHeight + chrome.Height);
     }
 
+    /// <summary>自检时抑制所有模态框，避免无人值守的自检被对话框卡住。</summary>
+    internal bool SuppressDialogsForTest { get; set; }
+
+    /// <summary>自检时强制指定"是否有活动分身"，用来覆盖无会话的关闭路径。</summary>
+    internal bool? HasSessionForTest { get; set; }
+
+    private bool HasActiveSession() =>
+        HasSessionForTest
+        ?? (ChildSessionNative.GetSessionId() is not null || _rdp.ConnectedState != 0);
+
     /// <summary>
     /// 缩放模式下把**画面区**锁成分身分辨率的宽高比，画面正好铺满、四周没有黑边。
     /// </summary>
     private void ApplyAspectToWindow()
     {
-        if (_settings.FitToWindow || _fullscreen.IsFullscreen)
+        // 关闭过程中改窗口尺寸/句柄会抛“窗口关闭期间”异常，直接跳过。
+        if (!CanTouchWindow || _settings.FitToWindow || _fullscreen.IsFullscreen)
         {
             return;
         }
@@ -327,9 +338,8 @@ public partial class MainWindow : Window
     /// <summary>当前窗口所在显示器的工作区（DIP）。</summary>
     private Rect? GetCurrentWorkAreaDips()
     {
-        var handle = _windowHandle != IntPtr.Zero
-            ? _windowHandle
-            : new WindowInteropHelper(this).Handle;
+        // 这里绝不能用 WindowInteropHelper.EnsureHandle()：关闭期间或在 Closing 里调用会抛异常。
+        var handle = _windowHandle;
         if (handle == IntPtr.Zero)
         {
             return null;
@@ -348,7 +358,7 @@ public partial class MainWindow : Window
     /// <summary>窗口尺寸变化后（拖拽、贴边、程序改动）延时把比例拉回画面比例。</summary>
     private void ScheduleAspectFix()
     {
-        if (_settings.FitToWindow || _fullscreen.IsFullscreen || _applyingAspect)
+        if (!CanTouchWindow || _settings.FitToWindow || _fullscreen.IsFullscreen || _applyingAspect)
         {
             return;
         }
@@ -1600,6 +1610,20 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 在 Closing 事件里同步调用 Close() / Show() 会抛
+    /// “在窗口关闭期间，无法将可见性设置为可见，也无法调用 Show、ShowDialog、Close…” ——
+    /// 此刻 WPF 已把窗口标记为 closing。必须排到下一轮 Dispatcher 再关。
+    /// </summary>
+    private void CloseDeferred()
+    {
+        _closeApproved = true;
+        Dispatcher.BeginInvoke(new Action(Close), System.Windows.Threading.DispatcherPriority.Normal);
+    }
+
+    /// <summary>关闭过程中禁止再做窗口几何/可见性操作（会抛“窗口关闭期间”异常）。</summary>
+    private bool CanTouchWindow => !_closeInProgress;
+
     private async void OnWindowClosing(object? sender, CancelEventArgs e)
     {
         if (_closeApproved)
@@ -1617,11 +1641,9 @@ public partial class MainWindow : Window
         try
         {
             HeaderMenu.IsOpen = false;
-            var hasSession = ChildSessionNative.GetSessionId() is not null || _rdp.ConnectedState != 0;
-            if (!hasSession)
+            if (!HasActiveSession())
             {
-                _closeApproved = true;
-                Close();
+                CloseDeferred();
                 return;
             }
 
@@ -1631,7 +1653,9 @@ public partial class MainWindow : Window
             var result = MessageBoxResult.Cancel;
             try
             {
-                result = MessageBox.Show(
+                result = SuppressDialogsForTest
+                    ? MessageBoxResult.Cancel
+                    : MessageBox.Show(
                     this,
                     "退出前请选择如何处理桌面分身：\n\n“是”：注销分身并退出（分身内程序全部关闭）\n“否”：仅断开并退出（分身内程序继续运行）\n“取消”：返回应用\n\n保留分身可能影响 Windows 关机或重启。",
                     "退出 DeskTwin",
@@ -1667,8 +1691,7 @@ public partial class MainWindow : Window
                 Disconnect();
             }
 
-            _closeApproved = true;
-            Close();
+            CloseDeferred();
         }
         catch (Exception exception)
         {
@@ -1751,7 +1774,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.3.7\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.3.8\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",
@@ -1798,6 +1821,10 @@ public partial class MainWindow : Window
     {
         var actual = exception.GetBaseException();
         SetStatus($"{title}：{actual.Message}");
+        if (SuppressDialogsForTest)
+        {
+            return;
+        }
 
         // 关窗过程中把 this 当 owner 会抛异常，其余情况带上 owner 才不会被置顶窗口挡住。
         if (_closeInProgress || !IsLoaded)
