@@ -350,6 +350,27 @@ public static class SelfTest
 
             return exitCode == 0 ? null : $"关窗后进程退出码异常：{exitCode}。";
         }));
+        checks.Add(RunCheck("关闭对话框三选一", () =>
+        {
+            var dialog = new CloseChoiceWindow();
+            try
+            {
+                dialog.UpdateLayout();
+                foreach (var name in new[] { "TrayButton", "KeepButton", "EndButton", "CancelButton" })
+                {
+                    if (dialog.FindName(name) is not System.Windows.Controls.Button)
+                    {
+                        return $"关闭对话框缺少“{name}”按钮。";
+                    }
+                }
+
+                return null;
+            }
+            finally
+            {
+                dialog.Close();
+            }
+        }));
         checks.Add(RunCheck("托盘图标与挂托盘", () =>
         {
             // 1) 托盘图标能用嵌入资源创建（单文件/自定义图标都走这条）。
@@ -373,7 +394,7 @@ public static class SelfTest
                 ShowInTaskbar = false,
                 SuppressDialogsForTest = true,
                 HasSessionForTest = true,
-                ClosePromptResultForTest = System.Windows.MessageBoxResult.Yes
+                CloseChoiceForTest = CloseChoice.Tray
             };
             var closed = false;
             window.Closed += (_, _) => closed = true;
@@ -438,6 +459,41 @@ public static class SelfTest
 
             return pressed > 0 ? null : "钩子装上但没收到 PrintScreen。";
         }));
+        checks.Add(RunCheck("退出但保留分身", () =>
+        {
+            // 选“退出但保留分身”时只关窗口，绝不注销会话（测试里没有真实会话，重点验证会关窗）。
+            var window = new MainWindow
+            {
+                WindowStartupLocation = System.Windows.WindowStartupLocation.Manual,
+                Left = -8000,
+                Top = -8000,
+                ShowInTaskbar = false,
+                SuppressDialogsForTest = true,
+                HasSessionForTest = true,
+                CloseChoiceForTest = CloseChoice.ExitKeepSession
+            };
+            var closed = false;
+            window.Closed += (_, _) => closed = true;
+            try
+            {
+                window.Show();
+                PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.Loaded);
+                window.Close();
+                for (var i = 0; i < 8 && !closed; i++)
+                {
+                    PumpDispatcher(window.Dispatcher, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                }
+
+                return closed ? null : "选择“退出但保留分身”后窗口没有关闭。";
+            }
+            finally
+            {
+                if (!closed)
+                {
+                    window.ExitForTest();
+                }
+            }
+        }));
         checks.Add(RunCheck("提示窗口布局", () =>
         {
             var window = new NoticeWindow("自检提示", "用于验证“不再显示此提示”对话框能否正常创建。");
@@ -494,7 +550,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.4",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.5",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),
