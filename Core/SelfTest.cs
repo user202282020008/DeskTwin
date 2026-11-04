@@ -91,8 +91,8 @@ public static class SelfTest
         checks.Add(RunCheck("全屏自适应分辨率", ValidateAdaptiveResolution));
         checks.Add(RunCheck("主窗口布局与分辨率菜单", () =>
         {
-            // 构造主窗口即可验证 XAML 能否解析（历史上曾因资源类型错误在这里暴露）；
-            // 注意不要 Show/Close，否则会走到真实的退出确认流程。
+            // 构造主窗口即可验证 XAML 能否解析（历史上曾因资源类型错误在这里暴露）。
+            // 不 Show/Close：在 OnStartup 里同步显示窗口会让 Application 进入关闭流程。
             var window = new MainWindow();
             window.UpdateLayout();
             if (window.Width < 800 || window.Height < 500)
@@ -119,27 +119,77 @@ public static class SelfTest
                 return "本机分辨率没有标注“（本机）”。";
             }
 
-            if (items.Count(item => item.IsChecked) != 1)
+            var checkedItems = items.Where(item => item.IsChecked).ToList();
+            if (checkedItems.Count != 1)
             {
                 return "分辨率菜单没有唯一的勾选项。";
             }
 
-            // 缩放模式应把窗口锁成分身分辨率的宽高比（否则画面四周会留黑边）。
-            var scaled = items.First(item => item.IsChecked).Tag as string;
-            var parts = scaled?.Split('x');
-            if (parts?.Length == 2
-                && int.TryParse(parts[0], out var targetWidth)
-                && int.TryParse(parts[1], out var targetHeight)
-                && targetWidth > 0
-                && targetHeight > 0)
+            var parts = (checkedItems[0].Tag as string)?.Split('x');
+            if (parts?.Length != 2
+                || !int.TryParse(parts[0], out var targetWidth)
+                || !int.TryParse(parts[1], out var targetHeight)
+                || targetWidth <= 0
+                || targetHeight <= 0)
             {
-                window.SetResolutionModeForTest(fitToWindow: false);
-                var windowAspect = window.Width / window.Height;
-                var desktopAspect = (double)targetWidth / targetHeight;
-                if (Math.Abs(windowAspect - desktopAspect) > 0.02)
-                {
-                    return $"缩放模式窗口比例 {windowAspect:0.000} 未对齐画面比例 {desktopAspect:0.000}，会留黑边。";
-                }
+                return "分辨率菜单的勾选项没有有效的宽高。";
+            }
+
+            // 关键回归点：比例必须按**画面区**算。按窗口整体算会差一个标题栏高度，
+            // 画面区就会比桌面更"扁"，等比缩放后左右各留一条黑边。
+            var headerHeight = window.HeaderRow.Height.IsAbsolute
+                ? window.HeaderRow.Height.Value
+                : 24;
+            if (headerHeight <= 0)
+            {
+                return "标题栏高度为 0，画面区会盖住标题栏。";
+            }
+
+            var reference = new System.Drawing.Size(targetWidth, targetHeight);
+            var chrome = new System.Windows.Size(0, headerHeight);
+            const double sampleWidth = 1180;
+            var fitted = MainWindow.FitWindowToViewportAspect(
+                sampleWidth,
+                chrome,
+                reference,
+                new System.Windows.Size(320, 200));
+
+            var desktopAspect = (double)targetWidth / targetHeight;
+            var viewportAspect = (fitted.Width - chrome.Width) / (fitted.Height - chrome.Height);
+            if (Math.Abs(viewportAspect - desktopAspect) > 0.005)
+            {
+                return $"缩放模式下画面区比例 {viewportAspect:0.0000} 未对齐分身比例 {desktopAspect:0.0000}，会留黑边。";
+            }
+
+            // 反向确认：如果按窗口整体对齐（旧做法），算出来的高度会明显偏小——
+            // 用整窗口高度当画面区高度就是黑边的成因。
+            var naiveHeight = sampleWidth / desktopAspect;
+            if (Math.Abs(naiveHeight - fitted.Height) < headerHeight / 2)
+            {
+                return $"窗口高度 {fitted.Height:0.#} 与按整窗口比例算出的 {naiveHeight:0.#} 几乎相同，"
+                       + "说明比例没有把标题栏算进去。";
+            }
+
+            // 算出的窗口尺寸要真的能让画面铺满：修正后不应出现黑边。
+            var fixedViewport = new System.Windows.Size(
+                fitted.Width - chrome.Width,
+                fitted.Height - chrome.Height);
+            var fixedPresented = MainWindow.ComputePresentedSize(fixedViewport, reference);
+            if (fixedPresented.Width < fixedViewport.Width - 1
+                || fixedPresented.Height < fixedViewport.Height - 1)
+            {
+                return $"修正后画面 {fixedPresented.Width:0} × {fixedPresented.Height:0} 仍小于画面区 "
+                       + $"{fixedViewport.Width:0} × {fixedViewport.Height:0}，还会留黑边。";
+            }
+
+            // 再用旧算法（窗口 1180×740，画面区只剩 716 高）验证它确实会留黑边，
+            // 证明这条断言真的能抓到问题，不是空跑。
+            var legacyViewport = new System.Windows.Size(1180, 740 - headerHeight);
+            var legacyPresented = MainWindow.ComputePresentedSize(legacyViewport, reference);
+            if (legacyViewport.Width - legacyPresented.Width <= 2)
+            {
+                return $"旧算法（窗口高度按整窗口比例算）在 {legacyViewport.Width:0} × {legacyViewport.Height:0} "
+                       + "的画面区里没有产生黑边，说明这条回归断言失效了。";
             }
 
             return null;
@@ -200,7 +250,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.6",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.3.7",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),

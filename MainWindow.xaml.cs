@@ -173,7 +173,85 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 缩放模式下把窗口锁成分身分辨率的宽高比，画面正好铺满、四周没有黑边。
+    /// 窗口里除了画面区之外占掉的高度/宽度（就是那条 24px 标题栏）。
+    /// 比例必须按**画面区**算，按窗口整体算会差一个标题栏高度，导致左右留黑边。
+    /// </summary>
+    private System.Windows.Size GetChromeSize()
+    {
+        var width = ActualWidth - ViewportContainer.ActualWidth;
+        var height = ActualHeight - ViewportContainer.ActualHeight;
+        if (width < 0 || double.IsNaN(width))
+        {
+            width = 0;
+        }
+
+        if (height < 0 || double.IsNaN(height))
+        {
+            height = 0;
+        }
+
+        // 布局还没完成时 ActualHeight 为 0，用已知的标题栏高度兜底。
+        if (height < 1)
+        {
+            height = HeaderRow.Height.IsAbsolute && HeaderRow.Height.Value > 0
+                ? HeaderRow.Height.Value
+                : 24;
+        }
+
+        return new System.Windows.Size(width, height);
+    }
+
+    /// <summary>画面区允许的最小尺寸（DIP）。</summary>
+    private System.Windows.Size MinViewportSize(System.Windows.Size chrome) => new(
+        Math.Max(320, MinWidth - chrome.Width),
+        Math.Max(200, MinHeight - chrome.Height));
+
+    /// <summary>
+    /// 由窗口宽度反推窗口尺寸，使**画面区**（窗口尺寸扣掉标题栏）正好等于分身分辨率比例。
+    /// 抽成静态纯函数，自检可以直接断言几何，不依赖窗口是否真的显示出来。
+    /// </summary>
+    internal static System.Windows.Size FitWindowToViewportAspect(
+        double windowWidth,
+        System.Windows.Size chrome,
+        DrawingSize reference,
+        System.Windows.Size minimumViewport)
+    {
+        var aspect = (double)reference.Width / reference.Height;
+        var viewWidth = Math.Max(minimumViewport.Width, windowWidth - chrome.Width);
+        var viewHeight = viewWidth / aspect;
+        if (viewHeight < minimumViewport.Height)
+        {
+            viewHeight = minimumViewport.Height;
+            viewWidth = viewHeight * aspect;
+        }
+
+        return new System.Windows.Size(viewWidth + chrome.Width, viewHeight + chrome.Height);
+    }
+
+    /// <summary>在给定盒子内放下指定比例的画面，返回需要的**窗口**尺寸（含标题栏）。</summary>
+    private System.Windows.Size FitWindowBox(
+        double boxWidth,
+        double boxHeight,
+        DrawingSize reference,
+        System.Windows.Size chrome)
+    {
+        var aspect = (double)reference.Width / reference.Height;
+        var availableWidth = Math.Max(1, boxWidth - chrome.Width);
+        var availableHeight = Math.Max(1, boxHeight - chrome.Height);
+
+        var viewWidth = availableWidth;
+        var viewHeight = viewWidth / aspect;
+        if (viewHeight > availableHeight)
+        {
+            viewHeight = availableHeight;
+            viewWidth = viewHeight * aspect;
+        }
+
+        return new System.Windows.Size(viewWidth + chrome.Width, viewHeight + chrome.Height);
+    }
+
+    /// <summary>
+    /// 缩放模式下把**画面区**锁成分身分辨率的宽高比，画面正好铺满、四周没有黑边。
     /// </summary>
     private void ApplyAspectToWindow()
     {
@@ -188,42 +266,37 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 最大化会让窗口比例和画面不一致（出现黑边），这里退回普通窗口并按比例铺到工作区。
+        var chrome = GetChromeSize();
+        var minimum = MinViewportSize(chrome);
+
+        // 最大化会让画面区比例和画面不一致（出现黑边），这里退回普通窗口并按工作区铺满。
         if (WindowState == WindowState.Maximized)
         {
             WindowState = WindowState.Normal;
             if (GetCurrentWorkAreaDips() is { } work)
             {
-                var fitted = FitInside(work.Width - 16, work.Height - 16, reference);
+                var maximized = FitWindowBox(work.Width - 16, work.Height - 16, reference, chrome);
                 SetWindowRect(
-                    work.X + (work.Width - fitted.Width) / 2,
-                    work.Y + (work.Height - fitted.Height) / 2,
-                    fitted.Width,
-                    fitted.Height);
+                    work.X + (work.Width - maximized.Width) / 2,
+                    work.Y + (work.Height - maximized.Height) / 2,
+                    maximized.Width,
+                    maximized.Height);
                 return;
             }
         }
 
-        var width = double.IsNaN(Width) || Width <= 0 ? ActualWidth : Width;
-        if (width <= 0)
+        var windowWidth = double.IsNaN(Width) || Width <= 0 ? ActualWidth : Width;
+        if (windowWidth <= 0)
         {
             return;
         }
 
-        var height = width * reference.Height / reference.Width;
-        if (height < MinHeight)
-        {
-            height = MinHeight;
-            width = height * reference.Width / reference.Height;
-        }
+        // 先用当前窗口宽度算出画面区宽度，再按画面比例反推高度，最后把标题栏加回去。
+        var fitted = FitWindowToViewportAspect(windowWidth, chrome, reference, minimum);
+        var width = fitted.Width;
+        var height = fitted.Height;
 
-        if (width < MinWidth)
-        {
-            width = MinWidth;
-            height = width * reference.Height / reference.Width;
-        }
-
-        if (Math.Abs(Height - height) < 0.5 && Math.Abs(Width - width) < 0.5)
+        if (Math.Abs(Height - height) < 1 && Math.Abs(Width - width) < 1)
         {
             return;
         }
@@ -249,17 +322,6 @@ public partial class MainWindow : Window
         {
             _applyingAspect = false;
         }
-    }
-
-    /// <summary>在给定盒子内放下指定比例的矩形（先试按宽、不行再按高）。</summary>
-    private static DrawingSize FitInside(double boxWidth, double boxHeight, DrawingSize reference)
-    {
-        var byWidth = AdaptiveResolution.FitToAspect(
-            (int)Math.Max(1, boxWidth), (int)Math.Max(1, boxHeight), reference, keepWidth: true);
-        return byWidth.Height <= boxHeight
-            ? byWidth
-            : AdaptiveResolution.FitToAspect(
-                (int)Math.Max(1, boxWidth), (int)Math.Max(1, boxHeight), reference, keepWidth: false);
     }
 
     /// <summary>当前窗口所在显示器的工作区（DIP）。</summary>
@@ -314,20 +376,35 @@ public partial class MainWindow : Window
             return false;
         }
 
+        // WM_SIZING 给的是物理像素的**窗口**矩形，画面区要扣掉标题栏；
+        // 按整窗口比例校正会差一个标题栏高度，导致左右各留一条黑边。
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var chrome = GetChromeSize();
+        var chromeWidth = (int)Math.Round(chrome.Width * dpi.DpiScaleX);
+        var chromeHeight = (int)Math.Round(chrome.Height * dpi.DpiScaleY);
+        var contentWidth = width - chromeWidth;
+        var contentHeight = height - chromeHeight;
+        if (contentWidth <= 0 || contentHeight <= 0)
+        {
+            return false;
+        }
+
         // 1 左 2 右 3 上 6 下 4 左上 5 右上 7 左下 8 右下
         var keepWidth = edge is not (3 or 6);
-        var size = AdaptiveResolution.FitToAspect(width, height, reference, keepWidth);
+        var content = AdaptiveResolution.FitToAspect(contentWidth, contentHeight, reference, keepWidth);
 
-        // 与 WPF 的 MinWidth 保持一致，否则拖动时会被布局再拉回去，抖动。
-        var minimumWidth = (int)Math.Max(640, MinWidth);
-        if (size.Width < minimumWidth)
+        // 与 WPF 的 MinWidth/MinHeight 保持一致，否则拖动时会被布局再拉回去，抖动。
+        var minContentWidth = (int)Math.Max(320, (MinWidth - chrome.Width) * dpi.DpiScaleX);
+        var minContentHeight = (int)Math.Max(200, (MinHeight - chrome.Height) * dpi.DpiScaleY);
+        if (content.Width < minContentWidth || content.Height < minContentHeight)
         {
-            size = AdaptiveResolution.FitToAspect(
-                minimumWidth,
-                size.Height,
-                reference,
-                keepWidth: keepWidth);
+            var aspect = (double)reference.Width / reference.Height;
+            var targetWidth = Math.Max(minContentWidth, (int)Math.Round(minContentHeight * aspect));
+            var targetHeight = Math.Max(minContentHeight, (int)Math.Round(targetWidth / aspect));
+            content = new DrawingSize(targetWidth, targetHeight);
         }
+
+        var size = new DrawingSize(content.Width + chromeWidth, content.Height + chromeHeight);
 
         switch (edge)
         {
@@ -507,17 +584,18 @@ public partial class MainWindow : Window
         }
 
         var desktop = CurrentDesktopSize;
-        var viewWidth = ViewportContainer.ActualWidth;
-        var viewHeight = ViewportContainer.ActualHeight;
-        if (viewWidth <= 0 || viewHeight <= 0 || desktop.Width <= 0 || desktop.Height <= 0)
+        var viewport = new System.Windows.Size(
+            ViewportContainer.ActualWidth,
+            ViewportContainer.ActualHeight);
+        if (viewport.Width <= 0 || viewport.Height <= 0 || desktop.Width <= 0 || desktop.Height <= 0)
         {
             return;
         }
 
-        // 窗口比例已经校正过时直接铺满，避免取整后残留一条黑边。
-        var viewAspect = viewWidth / viewHeight;
-        var desktopAspect = (double)desktop.Width / desktop.Height;
-        if (Math.Abs(viewAspect - desktopAspect) < 0.01)
+        var presented = ComputePresentedSize(viewport, desktop);
+
+        // 画面区比例已经和分身一致时直接铺满，避免取整后残留一条黑边。
+        if (presented.Width >= viewport.Width - 0.5 && presented.Height >= viewport.Height - 0.5)
         {
             RdpFormsHost.ClearValue(FrameworkElement.WidthProperty);
             RdpFormsHost.ClearValue(FrameworkElement.HeightProperty);
@@ -526,9 +604,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var scale = Math.Min(viewWidth / desktop.Width, viewHeight / desktop.Height);
-        RdpFormsHost.Width = Math.Max(1, Math.Round(desktop.Width * scale));
-        RdpFormsHost.Height = Math.Max(1, Math.Round(desktop.Height * scale));
+        RdpFormsHost.Width = Math.Max(1, presented.Width);
+        RdpFormsHost.Height = Math.Max(1, presented.Height);
         RdpFormsHost.HorizontalAlignment = System.Windows.HorizontalAlignment.Center;
         RdpFormsHost.VerticalAlignment = System.Windows.VerticalAlignment.Center;
     }
@@ -544,6 +621,33 @@ public partial class MainWindow : Window
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// 缩放模式下画面控件在画面区里的实际呈现尺寸：比例一致就铺满，否则等比缩小并居中（四周黑边）。
+    /// 抽成静态纯函数，自检可以直接断言"有没有黑边"。
+    /// </summary>
+    internal static System.Windows.Size ComputePresentedSize(
+        System.Windows.Size viewport,
+        DrawingSize desktop,
+        double aspectTolerance = 0.01)
+    {
+        if (viewport.Width <= 0 || viewport.Height <= 0 || desktop.Width <= 0 || desktop.Height <= 0)
+        {
+            return System.Windows.Size.Empty;
+        }
+
+        var viewAspect = viewport.Width / viewport.Height;
+        var desktopAspect = (double)desktop.Width / desktop.Height;
+        if (Math.Abs(viewAspect - desktopAspect) < aspectTolerance)
+        {
+            return viewport;
+        }
+
+        var scale = Math.Min(viewport.Width / desktop.Width, viewport.Height / desktop.Height);
+        return new System.Windows.Size(
+            Math.Max(1, Math.Round(desktop.Width * scale)),
+            Math.Max(1, Math.Round(desktop.Height * scale)));
     }
 
     /// <summary>画面区当前大小（物理像素），用于自适应模式下跟随窗口。</summary>
@@ -1647,7 +1751,7 @@ public partial class MainWindow : Window
     private static void ShowAbout()
     {
         var result = MessageBox.Show(
-            "DeskTwin 1.3.6\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            "DeskTwin 1.3.7\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",
