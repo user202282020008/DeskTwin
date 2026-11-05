@@ -58,6 +58,7 @@ public static class SelfTest
         }));
         checks.Add(RunCheck("RDP 凭据接口", RdpClientHost.ValidateCredentialInterface));
         checks.Add(RunCheck("缩放与凭据可重置", () => RdpClientHost.ValidateResetBehavior()));
+        checks.Add(RunCheck("鼠标与网络优化可写入", RdpClientHost.ValidateLatencySettings));
         checks.Add(RunCheck("DPAPI 凭据加密", () =>
         {
             const string plaintext = "DeskTwin-SelfTest-Credential";

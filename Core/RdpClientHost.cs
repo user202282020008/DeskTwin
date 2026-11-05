@@ -20,6 +20,14 @@ internal sealed class RdpClientHost : AxHost
     private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(1);
     private const long DisconnectCallbackTimeoutMs = 5000;
 
+    // 鼠标事件发送间隔（毫秒）。控件默认 100ms，等于每秒只把指针位置发 10 次，
+    // 分身里的鼠标会明显发飘；本机回环没有带宽压力，按 100Hz 发送。
+    private const int InputSendIntervalMs = 10;
+
+    // 0=自动检测。自动检测在回环上可能把会话误判成窄带，码率被压死，
+    // 表现就是画面和鼠标一起变卡。本机连接固定按 LAN 处理。
+    private const uint LanConnectionType = 6;
+
     private static readonly RemoteKey LeftWindowsKey = new(0x5B, IsExtended: true);
     private static readonly RemoteKey DKey = new(0x20, IsExtended: false);
     private static readonly RemoteKey TabKey = new(0x0F, IsExtended: false);
@@ -157,6 +165,66 @@ internal sealed class RdpClientHost : AxHost
         }
     }
 
+    /// <summary>
+    /// 自检用：确认真实控件接受“鼠标事件间隔 / 网络类型”这两项，
+    /// 写不进去的话流畅度优化就是空的。两项都可回读，能确定性断言。
+    /// </summary>
+    internal static string? ValidateLatencySettings()
+    {
+        var type = Type.GetTypeFromCLSID(new Guid(RdpClientClsid));
+        if (type is null)
+        {
+            return "MsRdpClient10 未注册。";
+        }
+
+        object? client = null;
+        try
+        {
+            client = Activator.CreateInstance(type);
+            if (client is null)
+            {
+                return "无法创建 RDP 控件实例。";
+            }
+
+            var advanced = GetComProperty(client, "AdvancedSettings7")
+                ?? throw new InvalidOperationException("RDP ActiveX 未返回 AdvancedSettings7。");
+
+            SetComProperty(advanced, "minInputSendInterval", InputSendIntervalMs);
+            var interval = Convert.ToInt32(
+                GetComProperty(advanced, "minInputSendInterval"),
+                CultureInfo.InvariantCulture);
+            if (interval != InputSendIntervalMs)
+            {
+                return $"鼠标事件间隔写入 {InputSendIntervalMs}ms 后读回 {interval}ms。";
+            }
+
+            SetComProperty(advanced, "NetworkConnectionType", LanConnectionType);
+            var connectionType = Convert.ToUInt32(
+                GetComProperty(advanced, "NetworkConnectionType"),
+                CultureInfo.InvariantCulture);
+            if (connectionType != LanConnectionType)
+            {
+                return $"网络类型写入 LAN(6) 后读回 {connectionType}。";
+            }
+
+            return null;
+        }
+        catch (Exception exception) when (exception is COMException
+                                          or InvalidCastException
+                                          or TargetInvocationException
+                                          or InvalidOperationException)
+        {
+            return "输入/网络优化设置失败：" + exception.GetBaseException().Message;
+        }
+        finally
+        {
+            if (client is not null && Marshal.IsComObject(client))
+            {
+                Marshal.FinalReleaseComObject(client);
+            }
+        }
+    }
+
     private void ApplyCredentials(object client)
     {
         var nonScriptable = (IMsRdpClientNonScriptable)client;
@@ -261,6 +329,12 @@ internal sealed class RdpClientHost : AxHost
             SetComProperty(advancedSettings, "EnableWindowsKey", 1));
         RunComStep("设置显示缩放", () =>
             SetComProperty(advancedSettings, "SmartSizing", _smartSizingEnabled));
+        // 默认 100ms 的鼠标节流是“不跟手”的直接原因，改成 100Hz。
+        RunComStep("提高鼠标事件频率", () =>
+            SetComProperty(advancedSettings, "minInputSendInterval", InputSendIntervalMs));
+        // 不让带宽探测在回环上压低码率。
+        RunComStep("固定局域网体验", () =>
+            SetComProperty(advancedSettings, "NetworkConnectionType", LanConnectionType));
         // 让 Ctrl+Alt+Break 交给容器处理，由本应用切换真全屏。
         TrySetComProperty(advancedSettings, "ContainerHandledFullScreen", 1);
 
@@ -268,7 +342,12 @@ internal sealed class RdpClientHost : AxHost
         RunComStep("设置 ConnectToChildSession", () =>
         {
             var extendedSettings = (IMsRdpExtendedSettings)client;
-            TrySetExtendedProperty(extendedSettings, "EnableZoom", true);
+            // 本机回环专用：帧缓冲重定向让客户端和子会话共享同一块帧缓冲内存，
+            // 省掉整屏编码/解码；硬件模式把位图解码交给 GPU。两者都只能在连接前设置。
+            TrySetExtendedProperty(extendedSettings, "EnableFrameBufferRedirection", true);
+            TrySetExtendedProperty(extendedSettings, "EnableHardwareMode", true);
+            // Zoom 与 SmartSizing 互斥，开着会让控件再套一层缩放，这里只保留 SmartSizing。
+            TrySetExtendedProperty(extendedSettings, "EnableZoom", false);
             ApplyDisplayScale(extendedSettings);
             extendedSettings.set_Property("ConnectToChildSession", ref connectToChildSession);
         });
