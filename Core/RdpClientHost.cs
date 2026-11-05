@@ -342,12 +342,9 @@ internal sealed class RdpClientHost : AxHost
         RunComStep("设置 ConnectToChildSession", () =>
         {
             var extendedSettings = (IMsRdpExtendedSettings)client;
-            // 本机回环专用：帧缓冲重定向让客户端和子会话共享同一块帧缓冲内存，
-            // 省掉整屏编码/解码；硬件模式把位图解码交给 GPU。两者都只能在连接前设置。
-            TrySetExtendedProperty(extendedSettings, "EnableFrameBufferRedirection", true);
-            TrySetExtendedProperty(extendedSettings, "EnableHardwareMode", true);
-            // Zoom 与 SmartSizing 互斥，开着会让控件再套一层缩放，这里只保留 SmartSizing。
-            TrySetExtendedProperty(extendedSettings, "EnableZoom", false);
+            // 图形解码/帧缓冲策略交还控件默认值。1.5.x 实测在这台双显卡机器上
+            // 强制帧缓冲重定向和硬件模式后 3D 引擎持续高占用，拖动反而更卡。
+            TrySetExtendedProperty(extendedSettings, "EnableZoom", true);
             ApplyDisplayScale(extendedSettings);
             extendedSettings.set_Property("ConnectToChildSession", ref connectToChildSession);
         });

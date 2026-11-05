@@ -59,26 +59,66 @@ public static class SelfTest
         checks.Add(RunCheck("RDP 凭据接口", RdpClientHost.ValidateCredentialInterface));
         checks.Add(RunCheck("缩放与凭据可重置", () => RdpClientHost.ValidateResetBehavior()));
         checks.Add(RunCheck("鼠标与网络优化可写入", RdpClientHost.ValidateLatencySettings));
-        checks.Add(RunCheck("远程会话帧率策略判断", () =>
+        checks.Add(RunCheck("旧图形策略回退分派与值保护", () =>
         {
-            if (RdpPerformanceTuning.IsFrameIntervalSufficient(null))
+            if (!RdpPerformanceTuning.ShouldRemoveLegacyValue(
+                    RdpPerformanceTuning.LegacyHardwareEncodeValue,
+                    RdpPerformanceTuning.LegacyHardwareEncodeValue)
+                || !RdpPerformanceTuning.ShouldRemoveLegacyValue(
+                    RdpPerformanceTuning.LegacyFrameIntervalValue,
+                    RdpPerformanceTuning.LegacyFrameIntervalValue))
             {
-                return "未设置时不应判定为已足够。";
+                return "1.5.1 写入的精确值应被识别为待回退。";
             }
 
-            if (RdpPerformanceTuning.IsFrameIntervalSufficient(30))
+            if (RdpPerformanceTuning.ShouldRemoveLegacyValue(null, 1)
+                || RdpPerformanceTuning.ShouldRemoveLegacyValue(0, 1)
+                || RdpPerformanceTuning.ShouldRemoveLegacyValue(2, 1)
+                || RdpPerformanceTuning.ShouldRemoveLegacyValue(30, 15))
             {
-                return "30ms（约 33fps）不应判定为足够。";
+                return "不存在或管理员自定义的值不应被删除。";
             }
 
-            if (!RdpPerformanceTuning.IsFrameIntervalSufficient(15))
+            var calls = new List<(string Path, string Name, int Value)>();
+            var report = RdpPerformanceTuning.RevertLegacySettings(
+                isAdministrator: true,
+                (path, name, value) =>
+                {
+                    calls.Add((path, name, value));
+                    // 第一项返回 false，验证第二项仍会被执行。
+                    return name == "DWMFRAMEINTERVAL";
+                });
+            if (calls.Count != 2
+                || calls[0] != (
+                    @"SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services",
+                    "AVCHardwareEncodePreferred",
+                    1)
+                || calls[1] != (
+                    @"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations",
+                    "DWMFRAMEINTERVAL",
+                    15))
             {
-                return "15ms（约 60fps）应判定为已足够。";
+                return "两个旧策略没有按正确键路径、值名和精确值全部执行。";
             }
 
-            return RdpPerformanceTuning.IsFrameIntervalSufficient(10)
-                ? null
-                : "用户设置的更小间隔不应被覆盖。";
+            if (report.HardwareEncodeRemoved || !report.FrameIntervalRemoved)
+            {
+                return "回退报告没有准确保留每一项的执行结果。";
+            }
+
+            var nonAdminCalls = 0;
+            var nonAdminReport = RdpPerformanceTuning.RevertLegacySettings(
+                isAdministrator: false,
+                (_, _, _) =>
+                {
+                    nonAdminCalls++;
+                    return true;
+                });
+            return nonAdminCalls != 0
+                   || nonAdminReport.HardwareEncodeRemoved
+                   || nonAdminReport.FrameIntervalRemoved
+                ? "非管理员不应执行或报告注册表回退。"
+                : null;
         }));
         checks.Add(RunCheck("DPAPI 凭据加密", () =>
         {
@@ -623,7 +663,7 @@ public static class SelfTest
         var report = new
         {
             Application = "DeskTwin",
-            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "1.4.9",
+            Version = typeof(SelfTest).Assembly.GetName().Version?.ToString(3) ?? "0.0.0",
             TestedAt = DateTimeOffset.Now,
             Os = RuntimeInformation.OSDescription,
             IsAdministrator = EnvironmentCheck.IsAdministrator(),

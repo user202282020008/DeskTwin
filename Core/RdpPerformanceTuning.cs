@@ -4,36 +4,13 @@ using Microsoft.Win32;
 
 namespace DeskTwin.Core;
 
-/// <summary>远程会话的两项编码/帧率策略状态。</summary>
-internal sealed record RdpTuningReport(
-    bool HardwareEncodeEnabled,
-    bool FrameIntervalRaised,
-    bool Changed,
-    string? Error)
-{
-    internal string Describe()
-    {
-        var encode = HardwareEncodeEnabled ? "AVC 硬件编码已启用" : "AVC 软件编码";
-        var frame = FrameIntervalRaised ? "帧率上限 60fps" : "帧率上限 30fps";
-        var suffix = Changed ? "（本次已写入）" : string.Empty;
-        return Error is null
-            ? $"{encode} · {frame}{suffix}"
-            : $"{encode} · {frame} · {Error}";
-    }
-}
+internal readonly record struct RdpTuningRollbackReport(
+    bool HardwareEncodeRemoved,
+    bool FrameIntervalRemoved);
 
 /// <summary>
-/// 提升本机 RDP 会话（含 Child Session）的实际帧率与拖动跟手度。
-/// 两项都是 Windows 官方支持的策略值，不是猜测：
-///
-/// 1) AVCHardwareEncodePreferred = 1
-///    官方说明：未配置时“we will always use software encoding”。2560×1600 的窗口拖动
-///    每帧都有大面积像素变化，纯 CPU 编码会成为瓶颈；开启后优先用 GPU 编码
-///    （Intel QSV / NVENC），出错会自动回退软件编码，不会连不上。
-///
-/// 2) DWMFRAMEINTERVAL = 15
-///    微软 KB2885213：RDP 远程会话默认把帧率限制在 30fps，这个值把上限提高到约 60fps。
-///    需要重启系统才生效。
+/// 撤回 1.5.1 曾强制写入的两项全局图形策略。
+/// 1.5.2 不再修改硬件编码或帧率设置，仅清理该版本写过的精确值。
 /// </summary>
 internal static class RdpPerformanceTuning
 {
@@ -43,93 +20,62 @@ internal static class RdpPerformanceTuning
     private const string WinStationsKeyPath =
         @"SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations";
 
-    internal const string HardwareEncodeValueName = "AVCHardwareEncodePreferred";
-    internal const string FrameIntervalValueName = "DWMFRAMEINTERVAL";
+    internal const int LegacyHardwareEncodeValue = 1;
+    internal const int LegacyFrameIntervalValue = 15;
 
-    /// <summary>帧间隔 15ms ≈ 60fps（微软 KB2885213 给出的值）。</summary>
-    internal const int FrameIntervalFor60Fps = 15;
+    private static bool _attempted;
 
-    private static RdpTuningReport? _cached;
-
-    /// <summary>整个进程只执行一次；非管理员时写入失败但不影响启动。</summary>
-    internal static RdpTuningReport EnsureApplied() => _cached ??= Apply();
-
-    internal static RdpTuningReport Apply()
+    /// <summary>整个进程只尝试一次；非管理员或值不存在时不做任何改动。</summary>
+    internal static RdpTuningRollbackReport EnsureLegacySettingsReverted()
     {
-        var changed = false;
-        string? error = null;
-
-        var hardware = ReadDword(PolicyKeyPath, HardwareEncodeValueName) == 1;
-        if (!hardware)
+        if (_attempted)
         {
-            if (TryWriteDword(PolicyKeyPath, HardwareEncodeValueName, 1, out var hardwareError))
-            {
-                hardware = true;
-                changed = true;
-            }
-            else
-            {
-                error = hardwareError;
-            }
+            return default;
         }
 
-        var frame = IsFrameIntervalSufficient(
-            ReadDword(WinStationsKeyPath, FrameIntervalValueName));
-        if (!frame)
-        {
-            if (TryWriteDword(
-                    WinStationsKeyPath,
-                    FrameIntervalValueName,
-                    FrameIntervalFor60Fps,
-                    out var frameError))
-            {
-                frame = true;
-                changed = true;
-            }
-            else
-            {
-                error ??= frameError;
-            }
-        }
-
-        return new RdpTuningReport(hardware, frame, changed, error);
+        _attempted = true;
+        return RevertLegacySettings(EnvironmentCheck.IsAdministrator(), RemoveLegacyValue);
     }
 
     /// <summary>
-    /// 帧间隔越小帧率越高；未设置或大于 15ms 都需要写入。
-    /// 用户手动调得更激进（比如 10ms）时保留原值，不覆盖。
+    /// 独立的分派层让无管理员自检也能验证键路径、值名、管理员门禁和两项都执行。
     /// </summary>
-    internal static bool IsFrameIntervalSufficient(int? current) =>
-        current is > 0 and <= FrameIntervalFor60Fps;
-
-    internal static int? ReadDword(string path, string name)
+    internal static RdpTuningRollbackReport RevertLegacySettings(
+        bool isAdministrator,
+        Func<string, string, int, bool> removeValue)
     {
-        try
+        if (!isAdministrator)
         {
-            using var key = Registry.LocalMachine.OpenSubKey(path);
-            return key?.GetValue(name) is int value ? value : null;
+            return default;
         }
-        catch (Exception exception) when (exception is SecurityException
-                                          or UnauthorizedAccessException
-                                          or IOException)
-        {
-            return null;
-        }
+
+        var hardware = removeValue(
+            PolicyKeyPath,
+            "AVCHardwareEncodePreferred",
+            LegacyHardwareEncodeValue);
+        var frame = removeValue(
+            WinStationsKeyPath,
+            "DWMFRAMEINTERVAL",
+            LegacyFrameIntervalValue);
+        return new RdpTuningRollbackReport(hardware, frame);
     }
 
-    private static bool TryWriteDword(string path, string name, int value, out string? error)
+    /// <summary>只匹配旧版本写过的值，保留管理员设置的其他值。</summary>
+    internal static bool ShouldRemoveLegacyValue(int? current, int legacyValue) =>
+        current == legacyValue;
+
+    private static bool RemoveLegacyValue(string path, string name, int legacyValue)
     {
-        error = null;
         try
         {
-            using var key = Registry.LocalMachine.CreateSubKey(path, writable: true);
-            if (key is null)
+            using var key = Registry.LocalMachine.OpenSubKey(path, writable: true);
+            if (key?.GetValue(name) is not int current
+                || !ShouldRemoveLegacyValue(current, legacyValue))
             {
-                error = "无法打开注册表项";
                 return false;
             }
 
-            key.SetValue(name, value, RegistryValueKind.DWord);
+            key.DeleteValue(name, throwOnMissingValue: false);
             return true;
         }
         catch (Exception exception) when (exception is SecurityException
@@ -137,7 +83,6 @@ internal static class RdpPerformanceTuning
                                           or IOException
                                           or NotSupportedException)
         {
-            error = exception.Message;
             return false;
         }
     }

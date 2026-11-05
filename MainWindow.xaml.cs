@@ -163,12 +163,14 @@ public partial class MainWindow : Window
         _statusTimer.Start();
         RefreshState();
 
-        // 远程会话的 AVC 硬件编码默认是关闭的，纯 CPU 编码是拖动窗口卡顿的主因。
-        // 写入只在首次生效，值已正确时不会重复改注册表。
-        var tuning = RdpPerformanceTuning.EnsureApplied();
-        if (tuning.Changed)
+        var rollback = RdpPerformanceTuning.EnsureLegacySettingsReverted();
+        if (rollback.FrameIntervalRemoved)
         {
-            SetStatus("远程会话性能优化：" + tuning.Describe());
+            SetStatus("已撤回 1.5.1 的图形性能策略；帧率上限将在下次重启后恢复默认。");
+        }
+        else if (rollback.HardwareEncodeRemoved)
+        {
+            SetStatus("已撤回 1.5.1 的硬件编码策略。");
         }
     }
 
@@ -2105,7 +2107,6 @@ public partial class MainWindow : Window
                          + $"分辨率模式：{(_settings.FitToWindow ? "自适应" : "缩放")}\n"
                          + $"当前分身分辨率：{CurrentDesktopSize.Width} × {CurrentDesktopSize.Height}\n"
                          + $"会话缩放：{DescribeSessionScale()}\n"
-                         + $"远程会话编码：{RdpPerformanceTuning.EnsureApplied().Describe()}\n"
                          + $"画面区：{ViewportContainer.ActualWidth:0} × {ViewportContainer.ActualHeight:0}（DIP）\n"
                          + $"画面控件：{RdpFormsHost.ActualWidth:0} × {RdpFormsHost.ActualHeight:0}（DIP）\n\n"
                          + (issues.Count == 0
@@ -2143,8 +2144,9 @@ public partial class MainWindow : Window
 
     private static void ShowAbout()
     {
+        var version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "未知";
         var result = MessageBox.Show(
-            "DeskTwin 1.4.9\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
+            $"DeskTwin {version}\n\n独立桌面分身工具，基于 Windows Child Session 与本机 RDP ActiveX。\n\n"
             + "核心 RDP 封装和会话启动方式参考并修改自 BetterGI（babalae/better-genshin-impact），"
             + "参考源码提交 9e3a0b008b063e144982818d46f00c00081ffbd2。\n\n"
             + "本修改版按 GPL-3.0 发布，无担保。源代码与 LICENSE.txt 随应用提供。\n\n是否打开 BetterGI 官方桌面分身文档？",
