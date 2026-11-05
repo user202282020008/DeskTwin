@@ -162,6 +162,14 @@ public partial class MainWindow : Window
         _suppressEvents = false;
         _statusTimer.Start();
         RefreshState();
+
+        // 远程会话的 AVC 硬件编码默认是关闭的，纯 CPU 编码是拖动窗口卡顿的主因。
+        // 写入只在首次生效，值已正确时不会重复改注册表。
+        var tuning = RdpPerformanceTuning.EnsureApplied();
+        if (tuning.Changed)
+        {
+            SetStatus("远程会话性能优化：" + tuning.Describe());
+        }
     }
 
     private void ApplySettingsToControls()
@@ -2097,6 +2105,7 @@ public partial class MainWindow : Window
                          + $"分辨率模式：{(_settings.FitToWindow ? "自适应" : "缩放")}\n"
                          + $"当前分身分辨率：{CurrentDesktopSize.Width} × {CurrentDesktopSize.Height}\n"
                          + $"会话缩放：{DescribeSessionScale()}\n"
+                         + $"远程会话编码：{RdpPerformanceTuning.EnsureApplied().Describe()}\n"
                          + $"画面区：{ViewportContainer.ActualWidth:0} × {ViewportContainer.ActualHeight:0}（DIP）\n"
                          + $"画面控件：{RdpFormsHost.ActualWidth:0} × {RdpFormsHost.ActualHeight:0}（DIP）\n\n"
                          + (issues.Count == 0

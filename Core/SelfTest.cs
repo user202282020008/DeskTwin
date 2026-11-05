@@ -59,6 +59,27 @@ public static class SelfTest
         checks.Add(RunCheck("RDP 凭据接口", RdpClientHost.ValidateCredentialInterface));
         checks.Add(RunCheck("缩放与凭据可重置", () => RdpClientHost.ValidateResetBehavior()));
         checks.Add(RunCheck("鼠标与网络优化可写入", RdpClientHost.ValidateLatencySettings));
+        checks.Add(RunCheck("远程会话帧率策略判断", () =>
+        {
+            if (RdpPerformanceTuning.IsFrameIntervalSufficient(null))
+            {
+                return "未设置时不应判定为已足够。";
+            }
+
+            if (RdpPerformanceTuning.IsFrameIntervalSufficient(30))
+            {
+                return "30ms（约 33fps）不应判定为足够。";
+            }
+
+            if (!RdpPerformanceTuning.IsFrameIntervalSufficient(15))
+            {
+                return "15ms（约 60fps）应判定为已足够。";
+            }
+
+            return RdpPerformanceTuning.IsFrameIntervalSufficient(10)
+                ? null
+                : "用户设置的更小间隔不应被覆盖。";
+        }));
         checks.Add(RunCheck("DPAPI 凭据加密", () =>
         {
             const string plaintext = "DeskTwin-SelfTest-Credential";
